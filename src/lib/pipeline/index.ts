@@ -9,15 +9,19 @@ import { deleteFileUrl, saveArtifact } from "../storage";
 import { renderStudyHtml } from "./render";
 
 export interface Artifacts {
-  asr?: Transcript; asrParts?: number; asrComplete?: boolean; repair?: Repair[]; repaired?: Transcript;
+  asr?: Transcript; asrParts?: number; /** next ASR window start (s) inside the current part */ asrWindowStart?: number; asrComplete?: boolean; repair?: Repair[]; repaired?: Transcript;
   summary?: LectureSummary; html?: string; pdf?: string; audioDeleted?: boolean;
 }
+
+/** ASR window length (s): long audio is transcribed in windows so Gemini's JSON output is not truncated. */
+const ASR_WINDOW_SEC = Number(process.env.ASR_WINDOW_SEC || 360);
+const ASR_MAX_WINDOWS = 60;
 
 async function audioInputs(lectureId: string, legacyUrl: string | null): Promise<AudioInput[]> {
   const segs = await db.select().from(schema.segments).where(eq(schema.segments.lectureId, lectureId)).orderBy(asc(schema.segments.seq));
   let off = 0;
   const out: AudioInput[] = [];
-  for (const s of segs) { if (s.url) out.push({ url: s.url, mime: s.mime, offsetSec: off }); off += s.duration ?? 0; }
+  for (const s of segs) { if (s.url) out.push({ url: s.url, mime: s.mime, offsetSec: off, durationSec: s.duration ?? undefined }); off += s.duration ?? 0; }
   if (!out.length && legacyUrl) out.push({ url: legacyUrl, mime: "audio/mp4", offsetSec: 0 });
   return out;
 }
@@ -96,10 +100,17 @@ export async function advanceJob(jobId: string) {
         if (!inputs.length && ai.name !== "mock") throw new Error("lecture has no audio");
         const list = inputs.length ? inputs : [{ url: "", mime: "audio/mp4", offsetSec: 0 }];
         const done = a.asrParts ?? 0;
-        const t = await ai.transcribe(list[done], ctx);
+        const cur = list[done];
+        const ws = a.asrWindowStart ?? 0;
+        const known = cur.durationSec && cur.durationSec > 0;
+        // Window when duration is unknown or longer than one window; short known parts go in one call.
+        const windowed = ai.name !== "mock" && (!known || cur.durationSec! > ASR_WINDOW_SEC * 1.25);
+        const we = windowed ? (known ? Math.min(cur.durationSec!, ws + ASR_WINDOW_SEC) : ws + ASR_WINDOW_SEC) : undefined;
+        const t = await ai.transcribe(windowed ? { ...cur, windowStart: ws, windowEnd: we } : cur, ctx);
         a.asr = { language: t.language, segments: [...(a.asr?.segments ?? []), ...t.segments] };
-        a.asrParts = done + 1;
-        if (a.asrParts < list.length) next = "asr"; else a.asrComplete = true;
+        const partDone = !windowed || (known ? we! >= cur.durationSec! : (t.audioEnded || !t.segments.length || ws / ASR_WINDOW_SEC >= ASR_MAX_WINDOWS - 1));
+        if (partDone) { a.asrParts = done + 1; a.asrWindowStart = 0; } else a.asrWindowStart = we;
+        if ((a.asrParts ?? 0) < list.length) next = "asr"; else a.asrComplete = true;
         break;
       }
       case "repair":
