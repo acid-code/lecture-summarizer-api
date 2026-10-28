@@ -39,7 +39,7 @@ R=$(curl -s "${H[@]}" -XPOST $B/uploads -H 'content-type: application/json' -d '
 # mode=blob → PUT the bytes with the returned headers
 args=(); for k in $(echo "$R" | jq -r '.headers|keys[]'); do args+=(-H "$k: $(echo "$R" | jq -r --arg k "$k" '.headers[$k]')"); done
 URL=$(curl -s -XPUT "${args[@]}" --data-binary @seg0.m4a "$(echo "$R" | jq -r .put_url)" | jq -r .url)
-curl -s "${H[@]}" -XPOST $B/lectures/$L/audio/segments -H 'content-type: application/json' -d "{\"seq\":0,\"duration\":3000,\"mime\":\"audio/mp4\",\"url\":\"$URL\"}"
+curl -s "${H[@]}" -XPOST $B/lectures/$L/audio/segments -H 'content-type: application/json' -d "{\"seq\":0,\"duration\":300,\"mime\":\"audio/mp4\",\"url\":\"$URL\"}"
 ```
-Same JSON `{url}` for `/lectures/{id}/slides` and `/lectures/{id}/context`. Locally (no Blob token) `/v1/uploads` → `{"mode":"multipart"}`; keep using `-F file=@...`.
+(`duration` is seconds.) Same JSON `{url}` for `/lectures/{id}/slides` and `/lectures/{id}/context`. Locally (no Blob token) `/v1/uploads` → `{"mode":"multipart"}`; keep using `-F file=@...`.
 Not yet tested against a real Blob store (no token on the box).
