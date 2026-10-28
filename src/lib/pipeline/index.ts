@@ -135,8 +135,15 @@ export async function advanceJob(jobId: string) {
     return row;
   } catch (e) {
     const [row] = await db.update(schema.jobs)
-      .set({ stage: "failed", error: `${current}: ${(e as Error).message}`, artifacts: JSON.stringify(a), updatedAt: Date.now() })
+      .set({ stage: "failed", error: `${current}: ${shortErr(e)}`, artifacts: JSON.stringify(a), updatedAt: Date.now() })
       .where(eq(schema.jobs.id, jobId)).returning();
     return row;
   }
+}
+
+/** Keep job errors short and readable (Google errors embed huge JSON). */
+function shortErr(e: unknown): string {
+  const m = (e as Error)?.message ?? String(e);
+  if (/\b429\b|RESOURCE_EXHAUSTED/i.test(m)) return "Gemini free daily quota exhausted; retry after reset";
+  return m.length > 400 ? m.slice(0, 400) + "…" : m;
 }

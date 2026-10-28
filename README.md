@@ -37,7 +37,7 @@ Expected: ~$0/mo for 1 user, ~1 lecture/week; ~$0–5/mo if free limits bite (ve
 ### 1. Gemini API key
 1. Go to https://aistudio.google.com/apikey and create a key.
 2. Put it in `.env.local` as `GEMINI_API_KEY` (and in Vercel → Project → Settings → Environment Variables).
-3. `GEMINI_MODEL` defaults to `gemini-2.5-flash` — model names change fast (verify). The plan mentions `gemini-3.5-transcribe` for ASR (verify).
+3. `GEMINI_MODEL` defaults to the first rung of the model ladder (`gemini-3.5-flash-lite`), see below.
 
 **Google AI Pro** (the Gemini app subscription) is separate from Gemini **API** billing; Pro may add AI Studio quota / Cloud credits (verify). The free API tier is enough to start. Free-tier API data may be used to improve Google products (verify) — keep audio private-ish accordingly.
 
@@ -121,6 +121,16 @@ Legacy `/api/*` routes (web scaffold: `/api/courses`, `/api/jobs/{id}/advance`, 
   - JSON `{url}` is only accepted for `https://*.blob.vercel-storage.com` or `local:data/uploads/...` (no SSRF / path traversal).
   - The Android app uses Blob when `/v1/uploads` says `blob` and the file is > 4 MB, else multipart.
 - **Raw audio deletion**: after the PDF stage, segment files are deleted and URLs nulled (`DELETE_RAW_AUDIO=true` default).
-- Gemini: default `gemini-3.5-flash` (2.5-flash is closed to new keys), fallbacks on 503 via `GEMINI_FALLBACK_MODELS`, retry with jittered backoff (`GEMINI_RETRIES`, default 5; total wait capped by `GEMINI_RETRY_BUDGET_MS`, default 90 s). If still failing, the job goes `failed` with `error: "<stage>: …"`; call `POST /v1/jobs/{id}/retry` later (the Android Retry button does this).
+- Gemini **model ladder** (free tier, AI Studio free project, Oct 2026 — verify yours in AI Studio → Rate limits; quota is per project and resets at midnight Pacific):
+
+  | Rung | Model | Free RPM / RPD |
+  | --- | --- | --- |
+  | 1 | `gemini-3.5-flash-lite` | 15 / 500 |
+  | 2 | `gemini-3.1-flash-lite` | 15 / 500 |
+  | 3 | `gemini-3.5-flash` | 5 / 20 |
+  | 4 | `gemini-3.8-flash` | 5 / 20 |
+  | 5 | `gemini-flash-latest` | 5 / 20 |
+
+  On 429 / `RESOURCE_EXHAUSTED` the next rung is tried immediately (no backoff); a model that hits a daily limit is skipped for 1 h in that process. 500/503 get jittered backoff (`GEMINI_RETRIES`, default 5; total wait capped by `GEMINI_RETRY_BUDGET_MS`, default 90 s). If every rung is out of quota the job goes `failed` with `error: "<stage>: Gemini free daily quota exhausted; retry after reset"` (no raw JSON). Override with `GEMINI_MODEL` (first rung) and `GEMINI_FALLBACK_MODELS` (comma list replacing the rest). Call `POST /v1/jobs/{id}/retry` after reset (the Android Retry button does this).
 
 Full job script: `scripts/mock-job.sh [base] [audio] [context.pdf] [slides.pdf]` — see TEST.md.

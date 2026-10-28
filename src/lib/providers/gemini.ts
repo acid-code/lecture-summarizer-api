@@ -3,9 +3,26 @@ import { readFileUrl } from "../storage";
 import { repairPrompt, summaryPrompt } from "./prompts";
 import type { AiProvider, Repair, LectureSummary, WindowTranscript } from "./types";
 
-/** Primary model + fallbacks tried on 503 "high demand". gemini-2.5-flash is closed to new keys (Oct 2026). */
-const models = () => [process.env.GEMINI_MODEL || "gemini-3.5-flash",
-  ...(process.env.GEMINI_FALLBACK_MODELS ?? "gemini-flash-latest,gemini-3.8-flash").split(",").map((m) => m.trim()).filter(Boolean)];
+/**
+ * Model ladder, highest free-tier daily quota first (AI Studio free project, Oct 2026):
+ *   gemini-3.5-flash-lite, gemini-3.1-flash-lite ~15 RPM / 500 RPD
+ *   gemini-3.5-flash, gemini-3.8-flash, gemini-flash-latest ~5 RPM / 20 RPD
+ * On 429/quota errors the next model is tried. GEMINI_MODEL / GEMINI_FALLBACK_MODELS override.
+ */
+export const DEFAULT_LADDER = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.8-flash", "gemini-flash-latest"];
+export const models = () => {
+  const primary = process.env.GEMINI_MODEL || DEFAULT_LADDER[0];
+  const fb = process.env.GEMINI_FALLBACK_MODELS !== undefined
+    ? process.env.GEMINI_FALLBACK_MODELS.split(",").map((m) => m.trim()).filter(Boolean)
+    : DEFAULT_LADDER;
+  return [...new Set([primary, ...fb])];
+};
+export const QUOTA_MSG = "Gemini free daily quota exhausted; retry after reset";
+export class QuotaError extends Error { constructor() { super(QUOTA_MSG); } }
+/** Models whose daily quota is exhausted in this process (until ~midnight Pacific; we just keep 1h). */
+const exhausted = new Map<string, number>();
+const isQuota = (m: string) => /\b429\b|RESOURCE_EXHAUSTED|quota/i.test(m);
+const isDaily = (m: string) => /PerDay|per day|daily|RPD|retry in \d+h|"retryDelay":\s*"\d{4,}s"/i.test(m);
 const INLINE_MAX = 15 * 1024 * 1024; // inline small files (request limit ~20 MB); larger go through the Files API
 const client = () => new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
 
@@ -25,19 +42,31 @@ async function uploadToGemini(ai: GoogleGenAI, url: string, fallbackMime: string
 }
 
 /**
- * Retry transient 429/500/503 ("high demand") with jittered exponential backoff, rotating fallback models.
- * Bounded by GEMINI_RETRIES (default 5) and a total wait budget GEMINI_RETRY_BUDGET_MS (default 90s) so a call
- * never hangs a job: past the budget the stage fails and can be resumed with POST /v1/jobs/{id}/retry.
+ * Walk the model ladder. 429/quota → next model immediately (daily limits are marked exhausted for 1h so later
+ * calls skip them). 500/503/overloaded → bounded jittered backoff (GEMINI_RETRIES, GEMINI_RETRY_BUDGET_MS).
+ * If every model is out of quota, throw a short QuotaError instead of dumping Google's JSON.
  */
 async function withRetry<T>(f: (model: string) => Promise<T>, tries = Number(process.env.GEMINI_RETRIES || 5)): Promise<T> {
-  const ms = models();
   const budget = Number(process.env.GEMINI_RETRY_BUDGET_MS || 90_000);
   const start = Date.now();
+  let transient = 0;
+  const now = Date.now();
+  const ladder = models().filter((m) => (exhausted.get(m) ?? 0) < now);
+  if (!ladder.length) throw new QuotaError();
+  let quotaHits = 0;
   for (let i = 0; ; i++) {
-    try { return await f(ms[i % ms.length]); } catch (e) {
+    const model = ladder[i % ladder.length];
+    try { return await f(model); } catch (e) {
       const msg = (e as Error).message ?? "";
-      if (i >= tries - 1 || !/\b(429|500|503)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded/i.test(msg)) throw e;
-      const wait = Math.min(30_000, 3000 * 2 ** i) * (0.75 + Math.random() * 0.5);
+      if (isQuota(msg)) {
+        quotaHits++;
+        if (isDaily(msg) || quotaHits >= ladder.length) exhausted.set(model, Date.now() + 3600_000);
+        console.warn(`gemini ${model} quota hit, trying next model`);
+        if (quotaHits >= ladder.length) throw new QuotaError();
+        continue;
+      }
+      if (++transient >= tries || !/\b(500|503)\b|UNAVAILABLE|overloaded|INTERNAL/i.test(msg)) throw e;
+      const wait = Math.min(30_000, 3000 * 2 ** (transient - 1)) * (0.75 + Math.random() * 0.5);
       if (Date.now() - start + wait > budget) throw e;
       await new Promise((r) => setTimeout(r, wait));
     }
