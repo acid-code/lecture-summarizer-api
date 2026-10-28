@@ -26,3 +26,20 @@ transcript ("דיפ לרנינג", "בק פרופגיישן", …) returned 4 co
 
 Gotchas seen: `gemini-2.5-flash` 404 for new keys; `gemini-flash-latest` / `gemini-3.8-flash` frequent 503 → fallbacks + retry.
 Large Files API uploads hung once ("fetch failed") → small files now go inline.
+
+## PDF renderer paths
+- Box default: system Chrome. Simulate Vercel locally with `PDF_RENDERER=sparticuz npm start` (unpacks `@sparticuz/chromium` to `/tmp/chromium`).
+- Check font embedding: `pdffonts /tmp/summary.pdf` → `IBMPlexSansHebrew-Regular/Bold … emb yes`.
+- Tested 2026-10-28 (mock provider): both paths → `summary.pdf HTTP 200 application/pdf`, Hebrew font embedded.
+
+## Large uploads on Vercel (Blob)
+```bash
+B=https://<deploy>.vercel.app/v1; H=(-H "authorization: Bearer $API_TOKEN")
+R=$(curl -s "${H[@]}" -XPOST $B/uploads -H 'content-type: application/json' -d '{"filename":"seg0.m4a","content_type":"audio/mp4"}')
+# mode=blob → PUT the bytes with the returned headers
+args=(); for k in $(echo "$R" | jq -r '.headers|keys[]'); do args+=(-H "$k: $(echo "$R" | jq -r --arg k "$k" '.headers[$k]')"); done
+URL=$(curl -s -XPUT "${args[@]}" --data-binary @seg0.m4a "$(echo "$R" | jq -r .put_url)" | jq -r .url)
+curl -s "${H[@]}" -XPOST $B/lectures/$L/audio/segments -H 'content-type: application/json' -d "{\"seq\":0,\"duration\":3000,\"mime\":\"audio/mp4\",\"url\":\"$URL\"}"
+```
+Same JSON `{url}` for `/lectures/{id}/slides` and `/lectures/{id}/context`. Locally (no Blob token) `/v1/uploads` → `{"mode":"multipart"}`; keep using `-F file=@...`.
+Not yet tested against a real Blob store (no token on the box).

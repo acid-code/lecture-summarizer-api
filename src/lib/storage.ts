@@ -33,3 +33,15 @@ export async function deleteFileUrl(url: string) {
   if (url.startsWith(LOCAL)) await unlink(path.join(process.cwd(), url.slice(LOCAL.length))).catch(() => {});
   else if (useBlob()) await del(url);
 }
+
+/**
+ * Validate a client-supplied file URL (JSON {url} uploads): only this deployment's Blob store
+ * (*.blob.vercel-storage.com) or a local: path under data/uploads. Prevents SSRF / path traversal.
+ */
+export function isAcceptableUploadUrl(url: string): boolean {
+  if (url.startsWith(LOCAL)) return !url.includes("..") && url.slice(LOCAL.length).startsWith(path.join("data", "uploads") + "/");
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" && u.hostname.endsWith(".blob.vercel-storage.com");
+  } catch { return false; }
+}

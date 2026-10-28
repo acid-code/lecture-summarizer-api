@@ -76,6 +76,8 @@ curl $B/jobs/$J | jq .artifacts.pdf   # path to the RTL study HTML
 1. Import this repo in Vercel (framework: Next.js).
 2. Add a Blob store; set `GEMINI_API_KEY`, `GEMINI_MODEL`, `DATABASE_URL`, `DATABASE_AUTH_TOKEN`, `API_TOKEN`.
 3. Deploy. Check `/api/health` → `{"provider":"gemini","blob":true}`.
+4. PDF needs nothing extra: `@sparticuz/chromium` is auto-selected on Vercel. Function memory: keep the default (2 GB on Hobby); the PDF stage takes ~3–8 s incl. cold unpack. Check by running a job and `GET /v1/lectures/{id}/summary.pdf` → 200 `application/pdf`. If the bundle exceeds the 250 MB limit, set `PDF_RENDERER=html` as a fallback.
+5. Large uploads: just connect the Blob store (step 2). Verify with `curl -XPOST $B/v1/uploads -H 'content-type: application/json' -d '{"filename":"a.m4a","content_type":"audio/mp4"}'` → `mode:"blob"`.
 
 ## API — `/v1` (Android contract, canonical)
 
@@ -88,6 +90,7 @@ Implemented in `src/app/v1/[...path]/route.ts` → `src/lib/v1/handlers.ts`. Mat
 | POST | `/v1/courses` | `{name, lang_primary}` | `{course_id}` | createCourse ✓ |
 | GET | `/v1/courses` | – | `[{course_id,name,has_context}]` | – |
 | POST | `/v1/courses/{id}/context` | multipart `file` (PDF) or JSON `{url}` | `{pages,chars}` | – |
+| POST | `/v1/uploads` | JSON `{filename, content_type, size?}` | `{mode:"multipart"}` (no Blob) or `{mode:"blob", method:"PUT", put_url, headers, expires_at}` | large-file uploads |
 | POST | `/v1/lectures` | `{course_id,title,recorded_at}` | `{lecture_id}` | createLecture ✓ |
 | GET | `/v1/lectures/{id}` | – | lecture + segments + jobs | – |
 | POST | `/v1/lectures/{id}/slides` | multipart `file` (PDF/PPTX) or JSON `{url}` | `{slides_text_chars}` | uploadSlides ✓ |
@@ -97,7 +100,7 @@ Implemented in `src/app/v1/[...path]/route.ts` → `src/lib/v1/handlers.ts`. Mat
 | POST | `/v1/lectures/{id}/process` | `{options}` | `{job_id}` (202) | startProcessing ✓ |
 | GET | `/v1/jobs/{id}` | – | `{state: queued\|running\|done\|failed, stage, progress 0-100, error, pdf_ready, repairs}` — **runs one stage per poll** (`AUTO_ADVANCE_ON_POLL`, `?advance=0` to just read) | jobStatus ✓ |
 | POST | `/v1/jobs/{id}/advance` | – | same as above; also resumes `failed` jobs | – |
-| GET | `/v1/lectures/{id}/summary.pdf` | – | `application/pdf` (501 if no PDF renderer) | downloadSummaryPdf ✓ |
+| GET | `/v1/lectures/{id}/summary.pdf` | – | `application/pdf` (501 only if `PDF_RENDERER=html` or Chromium fails to launch) | downloadSummaryPdf ✓ |
 | GET | `/v1/lectures/{id}/summary.html` / `summary.json` | – | RTL HTML / `{summary,repairs,transcript}` | – |
 
 Legacy `/api/*` routes (web scaffold: `/api/courses`, `/api/jobs/{id}/advance`, `/api/upload` Blob token) are kept.
@@ -106,8 +109,12 @@ Legacy `/api/*` routes (web scaffold: `/api/courses`, `/api/jobs/{id}/advance`, 
 - **ASR**: one audio segment per advance call (offsets = cumulative `duration`), so long lectures never exceed 300 s per call. Files ≤15 MB are sent inline; bigger ones via the Gemini Files API.
 - **Repair**: Gemini returns an **edit list** `[{segment,span,replacement,evidence,confidence}]` grounded in slide text + course-pack excerpts; edits with confidence ≥0.6 are applied to a `repaired` transcript, originals kept. TODO: phonetic pre-pass.
 - **Course-context pack**: PDF text extracted once (`unpdf`) into `courses.context_text`; each prompt gets top lexical-match ~1.2k-char chunks (≤5–6k chars total, `src/lib/context.ts`), never the whole PDF. Slides stay the primary source. TODO: embeddings.
-- **PDF**: RTL HTML → PDF with headless Chrome (`puppeteer-core`, system Chrome). Works on the box/self-host. On Vercel there is no Chrome → falls back to HTML and `summary.pdf` returns 501. TODO: `@sparticuz/chromium` or typst-wasm.
-- **Uploads**: multipart goes through the function and is saved to Vercel Blob if `BLOB_READ_WRITE_TOKEN`, else `data/uploads/` (local playtesting). **On Vercel the 4.5 MB body limit** means Android segments must go via Blob client upload (`/api/upload`) + JSON `{url}` to the same endpoints — Android client change still TODO.
+- **PDF**: RTL HTML → PDF with headless Chromium via `puppeteer-core` (`src/lib/pdf.ts`). **Local/box**: system Chrome (`CHROME_PATH` or `/usr/bin/{google-chrome,chromium,chromium-browser}`). **Vercel** (`VERCEL`/Lambda env, or force with `PDF_RENDERER=sparticuz`): `@sparticuz/chromium` (brotli pack in `node_modules/@sparticuz/chromium/bin`, unpacked to `/tmp` on cold start, ~+2–4 s; traced into functions via `outputFileTracingIncludes` in `next.config.ts`). The Hebrew font (IBM Plex Sans Hebrew, OFL, `fonts/`) is inlined as `@font-face` so it embeds even with no system fonts. `PDF_RENDERER=html` disables PDF (→ 501, use `summary.html`). typst-wasm (`templates/study.typ`) not used.
+- **Uploads**: two paths, same `/v1` endpoints.
+  - *Local/box (no `BLOB_READ_WRITE_TOKEN`)*: multipart through the function → `data/uploads/`. `POST /v1/uploads` returns `{mode:"multipart"}`.
+  - *Vercel (Blob store connected)*: function bodies are capped at **4.5 MB**, so the client calls `POST /v1/uploads` → gets a 1-hour, single-pathname, content-type-restricted Blob client token as `{put_url, headers}`, PUTs raw bytes to `put_url` with those headers (response JSON has `url`), then sends JSON `{url, ...}` to `/v1/lectures/{id}/audio/segments` (`{seq, started_at, duration, mime, url}`), `/slides` or `/context`. Small multipart still works on Vercel under 4.5 MB.
+  - JSON `{url}` is only accepted for `https://*.blob.vercel-storage.com` or `local:data/uploads/...` (no SSRF / path traversal).
+  - The Android app uses Blob when `/v1/uploads` says `blob` and the file is > 4 MB, else multipart.
 - **Raw audio deletion**: after the PDF stage, segment files are deleted and URLs nulled (`DELETE_RAW_AUDIO=true` default).
 - Gemini: default `gemini-3.5-flash` (2.5-flash is closed to new keys), fallbacks on 503 via `GEMINI_FALLBACK_MODELS`, retry with backoff.
 

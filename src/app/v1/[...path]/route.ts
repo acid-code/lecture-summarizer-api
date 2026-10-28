@@ -20,6 +20,7 @@ async function route(req: Request, { params }: Ctx) {
   try {
     if (a === "courses" && !b) return m === "POST" ? h.createCourse(req) : h.listCourses();
     if (a === "courses" && b && c === "context" && m === "POST") return h.uploadContext(req, b);
+    if (a === "uploads" && !b && m === "POST") return h.createUpload(req);
     if (a === "lectures" && !b && m === "POST") return h.createLecture(req);
     if (a === "lectures" && b) {
       if (!c && m === "GET") return h.getLecture(b);

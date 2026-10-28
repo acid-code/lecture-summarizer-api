@@ -9,13 +9,18 @@ import { db, ensureDb, schema } from "@/db";
 import { pdfToText } from "../context";
 import { bad, id, notFound } from "../http";
 import { advanceJob, progressOf, type Artifacts } from "../pipeline";
-import { readFileUrl, saveFile } from "../storage";
+import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
+import { isAcceptableUploadUrl, readFileUrl, saveFile } from "../storage";
 
 const j = (b: unknown, status = 200) => Response.json(b, { status });
 
 async function form(req: Request) {
   const ct = req.headers.get("content-type") ?? "";
-  if (ct.includes("application/json")) return { json: await req.json().catch(() => null) as Record<string, unknown> | null, fd: null };
+  if (ct.includes("application/json")) {
+    const json = await req.json().catch(() => null) as Record<string, unknown> | null;
+    if (json && typeof json.url === "string" && !isAcceptableUploadUrl(json.url)) throw new Error("url must be a Vercel Blob URL from POST /v1/uploads");
+    return { json, fd: null };
+  }
   return { json: null, fd: await req.formData() };
 }
 
@@ -157,3 +162,33 @@ export async function summaryFile(lid: string, kind: "pdf" | "html" | "json") {
 }
 
 export { ensureDb };
+
+/**
+ * POST /v1/uploads {filename, content_type, size?} → how the client should upload a large file.
+ *  - Blob configured (Vercel): {mode:"blob", method:"PUT", put_url, headers} — client PUTs raw bytes there
+ *    (bypasses the 4.5 MB function body limit); response JSON has `url`, which the client then sends as
+ *    JSON {url} to the normal /v1 slides|context|segments endpoint.
+ *  - No Blob (box/local): {mode:"multipart"} — keep using multipart to the /v1 endpoints.
+ */
+export async function createUpload(req: Request) {
+  const p = z.object({ filename: z.string().min(1), content_type: z.string().min(1), size: z.number().optional() }).safeParse(await req.json().catch(() => null));
+  if (!p.success) return bad(p.error.message);
+  if (!process.env.BLOB_READ_WRITE_TOKEN) return j({ mode: "multipart" });
+  const allowed = ["audio/", "application/pdf", "application/vnd.openxmlformats-officedocument.presentationml.presentation"];
+  if (!allowed.some((a) => p.data.content_type.startsWith(a))) return bad("content_type not allowed");
+  const pathname = `uploads/${id()}-${p.data.filename.replace(/[^\w.\-]/g, "_")}`;
+  const token = await generateClientTokenFromReadWriteToken({
+    pathname, maximumSizeInBytes: 200 * 1024 * 1024, allowedContentTypes: [p.data.content_type],
+    validUntil: Date.now() + 60 * 60 * 1000, addRandomSuffix: true,
+  });
+  const apiBase = process.env.VERCEL_BLOB_API_URL || "https://vercel.com/api/blob";
+  return j({
+    mode: "blob", method: "PUT", pathname,
+    put_url: `${apiBase}/?${new URLSearchParams({ pathname })}`,
+    headers: {
+      authorization: `Bearer ${token}`, "x-api-version": "13", "x-vercel-blob-access": "public",
+      "x-content-type": p.data.content_type, "x-add-random-suffix": "1",
+    },
+    expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+  }, 201);
+}
