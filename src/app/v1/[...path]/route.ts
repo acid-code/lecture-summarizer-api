@@ -1,9 +1,6 @@
 import { checkAuth } from "@/lib/auth";
 import { notFound } from "@/lib/http";
 import { getProvider } from "@/lib/providers";
-import * as h from "@/lib/v1/handlers";
-import { db, schema } from "@/db";
-import { eq } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300; // Vercel Hobby max; GET /v1/jobs/{id} may run one stage.
@@ -15,7 +12,11 @@ async function route(req: Request, { params }: Ctx) {
   if (m === "GET" && p.join("/") === "health")
     return Response.json({ ok: true, provider: getProvider().name, blob: !!process.env.BLOB_READ_WRITE_TOKEN });
   const denied = checkAuth(req); if (denied) return denied;
-  await h.ensureDb();
+  // Load handlers/db only after health so /v1/health never initializes the DB.
+  const h = await import("@/lib/v1/handlers");
+  try { await h.ensureDb(); } catch (e) {
+    return Response.json({ error: (e as Error).message }, { status: 503 });
+  }
   const [a, b, c, d] = p;
   try {
     if (a === "courses" && !b) return m === "POST" ? h.createCourse(req) : h.listCourses();
@@ -26,8 +27,8 @@ async function route(req: Request, { params }: Ctx) {
       if (!c && m === "GET") return h.getLecture(b);
       if (c === "slides" && m === "POST") return h.uploadSlides(req, b);
       if (c === "context" && m === "POST") {
-        const l = await db.query.lectures.findFirst({ where: eq(schema.lectures.id, b) });
-        return l ? h.uploadContext(req, l.courseId) : notFound();
+        const courseId = await h.lectureCourseId(b);
+        return courseId ? h.uploadContext(req, courseId) : notFound();
       }
       if (c === "audio" && d === "segments" && m === "POST") return h.uploadSegment(req, b);
       if (c === "markers" && m === "POST") return h.uploadMarkers(req, b);

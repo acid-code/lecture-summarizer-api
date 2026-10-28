@@ -75,9 +75,10 @@ curl $B/jobs/$J | jq .artifacts.pdf   # path to the RTL study HTML
 ## Deploy (Vercel Hobby)
 1. Import this repo in Vercel (framework: Next.js).
 2. Add a Blob store; set `GEMINI_API_KEY`, `GEMINI_MODEL`, `DATABASE_URL`, `DATABASE_AUTH_TOKEN`, `API_TOKEN`.
-3. Deploy. Check `/api/health` → `{"provider":"gemini","blob":true}`.
-4. PDF needs nothing extra: `@sparticuz/chromium` is auto-selected on Vercel. Function memory: keep the default (2 GB on Hobby); the PDF stage takes ~3–8 s incl. cold unpack. Check by running a job and `GET /v1/lectures/{id}/summary.pdf` → 200 `application/pdf`. If the bundle exceeds the 250 MB limit, set `PDF_RENDERER=html` as a fallback.
-5. Large uploads: just connect the Blob store (step 2). Verify with `curl -XPOST $B/v1/uploads -H 'content-type: application/json' -d '{"filename":"a.m4a","content_type":"audio/mp4"}'` → `mode:"blob"`.
+3. **Turso is required on Vercel**: set `DATABASE_URL=libsql://…` + `DATABASE_AUTH_TOKEN` (no file DB on Vercel; DB routes return a JSON 503 explaining this until set). `/v1/health` and `/api/health` work even before Turso is configured (no DB access).
+4. Deploy. Check `/api/health` → `{"provider":"gemini","blob":true}`.
+5. PDF needs nothing extra: `@sparticuz/chromium` is auto-selected on Vercel. Function memory: keep the default (2 GB on Hobby); the PDF stage takes ~3–8 s incl. cold unpack. Check by running a job and `GET /v1/lectures/{id}/summary.pdf` → 200 `application/pdf`. If the bundle exceeds the 250 MB limit, set `PDF_RENDERER=html` as a fallback.
+6. Large uploads: just connect the Blob store (step 2). Verify with `curl -XPOST $B/v1/uploads -H 'content-type: application/json' -d '{"filename":"a.m4a","content_type":"audio/mp4"}'` → `mode:"blob"`.
 
 ## API — `/v1` (Android contract, canonical)
 

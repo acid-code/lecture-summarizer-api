@@ -204,3 +204,8 @@ export async function createUpload(req: Request) {
     expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
   }, 201);
 }
+
+export async function lectureCourseId(lectureId: string): Promise<string | null> {
+  const l = await db.query.lectures.findFirst({ where: eq(schema.lectures.id, lectureId) });
+  return l?.courseId ?? null;
+}
