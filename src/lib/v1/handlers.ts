@@ -7,6 +7,7 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db, ensureDb, schema } from "@/db";
 import { pdfToText } from "../context";
+import { isPptx, pptxToText } from "../pptx";
 import { bad, id, notFound } from "../http";
 import { advanceJob, progressOf, type Artifacts } from "../pipeline";
 import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
@@ -71,8 +72,10 @@ export async function uploadSlides(req: Request, lid: string) {
   if (fd) { const f = await fileFrom(fd, "uploads", `${lid}-slides`); if (!f) return bad("file required"); ({ url, data, mime } = f); }
   else if (typeof json?.url === "string") { url = json.url; ({ data, mime = "" } = await readFileUrl(url)); }
   else return bad("multipart file or JSON {url}");
-  // PDF slides: extract text for prompts. PPTX text extraction: TODO (stored, but no text yet).
-  const slidesText = mime.includes("pdf") || url.endsWith(".pdf") ? await pdfToText(data!).catch(() => null) : null;
+  // Slide text for prompts (ASR bias, repair, summary): PDF via unpdf, PPTX via pure-JS unzip+XML. "\f" between slides.
+  const slidesText = mime.includes("pdf") || url.endsWith(".pdf") ? await pdfToText(data!).catch(() => null)
+    : isPptx(mime, url) ? (() => { try { return pptxToText(data!) || null; } catch (e) { console.error("pptx extract failed", e); return null; } })()
+    : null;
   await db.update(schema.lectures).set({ slidesUrl: url, slidesText }).where(eq(schema.lectures.id, lid));
   return j({ ok: true, slides_text_chars: slidesText?.length ?? 0 });
 }

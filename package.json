@@ -15,6 +15,7 @@
     "@sparticuz/chromium": "^153.0.0",
     "@vercel/blob": "^2.8.2",
     "drizzle-orm": "^0.45.4",
+    "fflate": "^0.8.3",
     "next": "^15.5.28",
     "puppeteer-core": "^24.43.1",
     "react": "^19.3.1",
