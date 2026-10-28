@@ -4,7 +4,7 @@ import { STAGES, type Stage } from "@/db/schema";
 import { retrieveExcerpts } from "../context";
 import { htmlToPdf } from "../pdf";
 import { getProvider, type AudioInput, type LectureContext, type Repair, type Transcript, type LectureSummary } from "../providers";
-import { applyRepairs } from "../providers/prompts";
+import { applyRepairs, isTranscriptThin } from "../providers/prompts";
 import { deleteFileUrl, saveArtifact } from "../storage";
 import { renderStudyHtml } from "./render";
 
@@ -45,6 +45,24 @@ export function progressOf(stage: string): number {
 export function resumeStage(a: Artifacts): Stage {
   if (!a.asrComplete) return "asr";
   return (["repair", "summary", "pdf"] as const).find((s) => !a[s]) ?? "done";
+}
+
+/**
+ * Re-run summary+pdf only: clears summary/html/pdf, keeps asr/repair (no ASR quota spent).
+ * Allowed for done/failed jobs (or any with ?force). Requires a complete ASR.
+ */
+export async function resummarizeJob(jobId: string, force = false): Promise<RetryResult> {
+  await ensureDb();
+  const job = await db.query.jobs.findFirst({ where: eq(schema.jobs.id, jobId) });
+  if (!job) return { ok: false, reason: "not_found" };
+  const a = JSON.parse(job.artifacts) as Artifacts;
+  const stuck = Date.now() - job.updatedAt > STUCK_MS;
+  if (!a.asrComplete || (job.stage !== "done" && job.stage !== "failed" && !stuck && !force)) return { ok: false, reason: "not_retryable", job };
+  delete a.summary; delete a.html; delete a.pdf;
+  const stage = resumeStage(a);
+  const [row] = await db.update(schema.jobs).set({ stage, error: null, artifacts: JSON.stringify(a), updatedAt: Date.now() })
+    .where(eq(schema.jobs.id, jobId)).returning();
+  return { ok: true, job: row };
 }
 
 /** A non-terminal job not updated for this long is considered stuck (crashed/timed-out invocation). */
@@ -118,8 +136,13 @@ export async function advanceJob(jobId: string) {
         a.repaired = applyRepairs(a.asr!, a.repair);
         break;
       case "summary":
-        a.summary = await ai.summarize(a.repaired ?? a.asr!, a.repair ?? [], ctx);
+      {
+        const tr = a.repaired ?? a.asr ?? { language: "he", segments: [] };
+        a.summary = await ai.summarize(tr, a.repair ?? [], ctx);
+        // Server-side truth wins over the model's flag.
+        a.summary.transcript_thin = isTranscriptThin(tr, ctx.slidesText) || !!a.summary.transcript_thin;
         break;
+      }
       case "pdf": {
         const html = renderStudyHtml(a.summary!);
         a.html = await saveArtifact(`${lecture.id}-study.html`, html, "text/html; charset=utf-8");

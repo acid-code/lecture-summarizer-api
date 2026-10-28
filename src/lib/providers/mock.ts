@@ -22,7 +22,7 @@ export const mockProvider: AiProvider = {
       title: ctx.title,
       overview: "סיכום לדוגמה (mock): ההרצאה עוסקת ב-deep learning וב-backpropagation.",
       sections: [
-        { heading: "Gradient descent", bullets: ["עדכון משקלים בכיוון ההפוך ל-gradient"], citation: "[slide 2, 00:12]" },
+        { heading: "Gradient descent", bullets: ["עדכון משקלים בכיוון ההפוך ל-gradient"], citation: "[t=0:12, slide 2]" },
         ...(excerpt ? [{ heading: "Course context (mock)", bullets: [excerpt.slice(0, 200)] }] : []),
       ],
       glossary: [{ term: "backpropagation", explanation: "חישוב גרדיאנטים לאחור דרך הרשת" }],

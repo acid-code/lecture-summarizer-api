@@ -8,6 +8,8 @@ export interface LectureSummary {
   overview: string;
   sections: { heading: string; bullets: string[]; citation?: string }[];
   glossary: { term: string; explanation: string }[];
+  /** True when the transcript was empty/very short vs slides (summary leans on slides). */
+  transcript_thin?: boolean;
 }
 export interface AudioInput {
   url: string; mime: string; offsetSec: number; durationSec?: number;

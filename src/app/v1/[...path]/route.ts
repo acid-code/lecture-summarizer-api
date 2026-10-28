@@ -33,14 +33,17 @@ async function route(req: Request, { params }: Ctx) {
       if (c === "audio" && d === "segments" && m === "POST") return h.uploadSegment(req, b);
       if (c === "markers" && m === "POST") return h.uploadMarkers(req, b);
       if (c === "process" && m === "POST") return h.startProcess(req, b);
+      if (m === "GET" && c === "transcript") return h.getTranscript(b);
       if (m === "GET" && c === "summary.pdf") return h.summaryFile(b, "pdf");
       if (m === "GET" && c === "summary.html") return h.summaryFile(b, "html");
       if (m === "GET" && c === "summary.json") return h.summaryFile(b, "json");
     }
+    if (a === "jobs" && !b && m === "GET") return h.listJobs();
     if (a === "jobs" && b) {
       if (!c && m === "GET") return h.getJob(b, process.env.AUTO_ADVANCE_ON_POLL !== "false" && new URL(req.url).searchParams.get("advance") !== "0");
       if (c === "advance" && m === "POST") return h.postAdvance(b);
       if (c === "retry" && m === "POST") return h.postRetry(req, b);
+      if (c === "resummarize" && m === "POST") return h.postResummarize(req, b);
     }
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 400 });

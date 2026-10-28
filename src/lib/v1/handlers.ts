@@ -3,13 +3,13 @@
  * Uploads are multipart through the function (local/self-hosted). On Vercel the 4.5 MB body limit applies:
  * use POST /api/upload (Blob client upload) + POST /v1/lectures/{id}/audio/segments with JSON {seq,...,url}.
  */
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db, ensureDb, schema } from "@/db";
 import { pdfToText } from "../context";
 import { isPptx, pptxToText } from "../pptx";
 import { bad, id, notFound } from "../http";
-import { advanceJob, progressOf, retryJob, type Artifacts } from "../pipeline";
+import { advanceJob, progressOf, resummarizeJob, retryJob, type Artifacts } from "../pipeline";
 import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
 import { blobAccess, isAcceptableUploadUrl, readFileUrl, saveFile } from "../storage";
 
@@ -129,7 +129,8 @@ function jobView(job: typeof schema.jobs.$inferSelect) {
   const a = JSON.parse(job.artifacts) as Artifacts;
   const state = job.stage === "done" ? "done" : job.stage === "failed" ? "failed" : job.stage === "queued" ? "queued" : "running";
   return { job_id: job.id, lecture_id: job.lectureId, state, stage: job.stage, progress: progressOf(job.stage), error: job.error,
-    pdf_ready: !!a.pdf, repairs: a.repair ?? null };
+    pdf_ready: !!a.pdf, transcript_ready: !!(a.repaired ?? a.asr)?.segments?.length, transcript_thin: a.summary?.transcript_thin ?? null,
+    updated_at: new Date(job.updatedAt).toISOString(), repairs: a.repair ?? null };
 }
 
 /**
@@ -153,6 +154,37 @@ export async function postRetry(req: Request, jid: string) {
   const r = await retryJob(jid, force);
   if (!r.ok && r.reason === "not_found") return notFound();
   if (!r.ok) return j({ ...jobView(r.job!), error: `job is ${r.job!.stage}; only failed or stuck jobs can be retried (use ?force=1 for a running job)` }, 409);
+  return j(jobView(r.job), 202);
+}
+
+/** GET /v1/jobs — 20 most recent jobs, for debugging without the phone's job id. */
+export async function listJobs() {
+  const rows = await db.select({ job_id: schema.jobs.id, lecture_id: schema.jobs.lectureId, stage: schema.jobs.stage, error: schema.jobs.error,
+    updated_at: schema.jobs.updatedAt, title: schema.lectures.title })
+    .from(schema.jobs).leftJoin(schema.lectures, eq(schema.lectures.id, schema.jobs.lectureId))
+    .orderBy(desc(schema.jobs.updatedAt)).limit(20);
+  return j(rows.map((r) => ({ ...r, state: r.stage === "done" || r.stage === "failed" || r.stage === "queued" ? r.stage : "running",
+    updated_at: new Date(r.updated_at).toISOString() })));
+}
+
+/** GET /v1/lectures/{id}/transcript — repaired (else raw ASR) transcript from the newest job that has one. */
+export async function getTranscript(lid: string) {
+  const jobs = await db.select().from(schema.jobs).where(eq(schema.jobs.lectureId, lid)).orderBy(desc(schema.jobs.updatedAt));
+  for (const job of jobs) {
+    const a = JSON.parse(job.artifacts) as Artifacts;
+    const t = a.repaired ?? a.asr;
+    if (!t?.segments?.length) continue;
+    return j({ lecture_id: lid, job_id: job.id, source: a.repaired ? "repaired" : "asr", complete: !!a.asrComplete, language: t.language,
+      segments: t.segments.map((s) => ({ t0: s.start, t1: s.end, text: s.text })) });
+  }
+  return j({ error: "no transcript" }, 404);
+}
+
+/** POST /v1/jobs/{id}/resummarize[?force=1] — clear summary/pdf, keep ASR+repair, re-run from summary. */
+export async function postResummarize(req: Request, jid: string) {
+  const r = await resummarizeJob(jid, new URL(req.url).searchParams.get("force") === "1");
+  if (!r.ok && r.reason === "not_found") return notFound();
+  if (!r.ok) return j({ ...jobView(r.job!), error: "needs a done/failed job with complete ASR (use ?force=1 for a running job)" }, 409);
   return j(jobView(r.job), 202);
 }
 
