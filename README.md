@@ -127,9 +127,11 @@ Legacy `/api/*` routes (web scaffold: `/api/courses`, `/api/jobs/{id}/advance`, 
   | --- | --- | --- |
   | 1 | `gemini-3.5-flash-lite` | 15 / 500 |
   | 2 | `gemini-3.1-flash-lite` | 15 / 500 |
-  | 3 | `gemini-3.5-flash` | 5 / 20 |
-  | 4 | `gemini-3.8-flash` | 5 / 20 |
-  | 5 | `gemini-flash-latest` | 5 / 20 |
+  | 3 | `gemini-3.8-flash` | 5 / 20 |
+  | 4 | `gemini-flash-latest` | 5 / 20 |
+  | 5 | `gemini-3.5-flash` | 5 / 20 |
+
+  Note: `gemini-2.5-flash-lite` is only ~20 RPD now, so it is not in the ladder.
 
   On 429 / `RESOURCE_EXHAUSTED` the next rung is tried immediately (no backoff); a model that hits a daily limit is skipped for 1 h in that process. 500/503 get jittered backoff (`GEMINI_RETRIES`, default 5; total wait capped by `GEMINI_RETRY_BUDGET_MS`, default 90 s). If every rung is out of quota the job goes `failed` with `error: "<stage>: Gemini free daily quota exhausted; retry after reset"` (no raw JSON). Override with `GEMINI_MODEL` (first rung) and `GEMINI_FALLBACK_MODELS` (comma list replacing the rest). Call `POST /v1/jobs/{id}/retry` after reset (the Android Retry button does this).
 

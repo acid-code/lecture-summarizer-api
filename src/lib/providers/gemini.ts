@@ -6,10 +6,10 @@ import type { AiProvider, Repair, LectureSummary, WindowTranscript } from "./typ
 /**
  * Model ladder, highest free-tier daily quota first (AI Studio free project, Oct 2026):
  *   gemini-3.5-flash-lite, gemini-3.1-flash-lite ~15 RPM / 500 RPD
- *   gemini-3.5-flash, gemini-3.8-flash, gemini-flash-latest ~5 RPM / 20 RPD
+ *   gemini-3.8-flash, gemini-flash-latest, gemini-3.5-flash ~5 RPM / 20 RPD
  * On 429/quota errors the next model is tried. GEMINI_MODEL / GEMINI_FALLBACK_MODELS override.
  */
-export const DEFAULT_LADDER = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.8-flash", "gemini-flash-latest"];
+export const DEFAULT_LADDER = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest", "gemini-3.5-flash"];
 export const models = () => {
   const primary = process.env.GEMINI_MODEL || DEFAULT_LADDER[0];
   const fb = process.env.GEMINI_FALLBACK_MODELS !== undefined
