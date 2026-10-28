@@ -1,16 +1,35 @@
-import { put } from "@vercel/blob";
-import { mkdir, writeFile } from "node:fs/promises";
+import { put, del } from "@vercel/blob";
+import { mkdir, writeFile, readFile, unlink } from "node:fs/promises";
 import path from "node:path";
 
-/** Store a generated artifact (PDF/HTML/JSON). Vercel Blob if configured, else ./data/artifacts. */
-export async function saveArtifact(name: string, body: string | Buffer, contentType: string): Promise<string> {
-  if (process.env.BLOB_READ_WRITE_TOKEN) {
-    const blob = await put(`artifacts/${name}`, body, { access: "public", contentType, addRandomSuffix: true });
-    return blob.url; // NOTE: public-but-unguessable URL; consider private access (verify Blob private support)
+const LOCAL = "local:";
+const useBlob = () => !!process.env.BLOB_READ_WRITE_TOKEN;
+
+/**
+ * Store a file. Vercel Blob if BLOB_READ_WRITE_TOKEN is set, else ./data/<dir>/ (returned as "local:<relpath>").
+ * Local fallback lets the box/dev machine playtest uploads without Blob.
+ */
+export async function saveFile(dir: "uploads" | "artifacts", name: string, body: Buffer | string, contentType: string): Promise<string> {
+  const safe = name.replace(/[^\w.\-]/g, "_");
+  if (useBlob()) {
+    const blob = await put(`${dir}/${safe}`, body, { access: "public", contentType, addRandomSuffix: true });
+    return blob.url; // public-but-unguessable URL; consider private access (verify Blob private support)
   }
-  const dir = path.join(process.cwd(), "data", "artifacts");
-  await mkdir(dir, { recursive: true });
-  const p = path.join(dir, name);
-  await writeFile(p, body);
-  return `file://${p}`;
+  const rel = path.join("data", dir, `${crypto.randomUUID().slice(0, 8)}-${safe}`);
+  await mkdir(path.dirname(rel), { recursive: true });
+  await writeFile(rel, body);
+  return LOCAL + rel;
+}
+export const saveArtifact = (name: string, body: Buffer | string, ct: string) => saveFile("artifacts", name, body, ct);
+
+export async function readFileUrl(url: string): Promise<{ data: Buffer; mime?: string }> {
+  if (url.startsWith(LOCAL)) return { data: await readFile(path.join(process.cwd(), url.slice(LOCAL.length))) };
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
+  return { data: Buffer.from(await r.arrayBuffer()), mime: r.headers.get("content-type") ?? undefined };
+}
+
+export async function deleteFileUrl(url: string) {
+  if (url.startsWith(LOCAL)) await unlink(path.join(process.cwd(), url.slice(LOCAL.length))).catch(() => {});
+  else if (useBlob()) await del(url);
 }

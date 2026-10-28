@@ -60,6 +60,7 @@ npm run dev                  # http://localhost:3000
 
 Smoke test (mock provider, no keys):
 ```bash
+# Preferred: scripts/mock-job.sh http://localhost:3000   (v1 API). Legacy /api flow:
 B=http://localhost:3000/api
 curl $B/health
 C=$(curl -s -XPOST $B/courses -H 'content-type: application/json' -d '{"name":"Intro ML"}' | jq -r .id)
@@ -76,39 +77,38 @@ curl $B/jobs/$J | jq .artifacts.pdf   # path to the RTL study HTML
 2. Add a Blob store; set `GEMINI_API_KEY`, `GEMINI_MODEL`, `DATABASE_URL`, `DATABASE_AUTH_TOKEN`, `API_TOKEN`.
 3. Deploy. Check `/api/health` → `{"provider":"gemini","blob":true}`.
 
-## API
+## API — `/v1` (Android contract, canonical)
 
-All routes accept `Authorization: Bearer $API_TOKEN` (auth stub; disabled if `API_TOKEN` is empty).
+Implemented in `src/app/v1/[...path]/route.ts` → `src/lib/v1/handlers.ts`. Matches `HttpLectureApi.kt` in
+[lecture-summarizer-android](https://github.com/acid-code/lecture-summarizer-android). Auth: `Authorization: Bearer $API_TOKEN` (disabled when unset).
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/api/health` | provider + blob status |
-| GET/POST | `/api/courses` | list / create `{name, contextPdfUrl?}` |
-| GET/POST | `/api/courses/{courseId}/lectures` | list / create `{title, audioUrl?, slidesUrl?}` |
-| GET/PATCH | `/api/lectures/{lectureId}` | read (with jobs) / attach `{audioUrl?, slidesUrl?}` after upload |
-| POST | `/api/lectures/{lectureId}/process` | create a queued job |
-| GET | `/api/jobs/{jobId}` | status + artifacts |
-| POST | `/api/jobs/{jobId}/advance` | run the next stage |
-| POST | `/api/upload` | Vercel Blob client-upload token route |
+| Method | Path | Body | Response | Android |
+|---|---|---|---|---|
+| GET | `/v1/health` | – | `{ok,provider,blob}` | – |
+| POST | `/v1/courses` | `{name, lang_primary}` | `{course_id}` | createCourse ✓ |
+| GET | `/v1/courses` | – | `[{course_id,name,has_context}]` | – |
+| POST | `/v1/courses/{id}/context` | multipart `file` (PDF) or JSON `{url}` | `{pages,chars}` | – |
+| POST | `/v1/lectures` | `{course_id,title,recorded_at}` | `{lecture_id}` | createLecture ✓ |
+| GET | `/v1/lectures/{id}` | – | lecture + segments + jobs | – |
+| POST | `/v1/lectures/{id}/slides` | multipart `file` (PDF/PPTX) or JSON `{url}` | `{slides_text_chars}` | uploadSlides ✓ |
+| POST | `/v1/lectures/{id}/context` | multipart `file` (PDF) or JSON `{url}` — stored on the lecture's **course** | `{pages,chars}` | uploadCourseContext ✓ |
+| POST | `/v1/lectures/{id}/audio/segments` | multipart `seq, started_at, duration, file` or JSON `{seq,duration,url,mime}`; idempotent per seq | `{seq}` | uploadSegment ✓ |
+| POST | `/v1/lectures/{id}/markers` | `[{t_sec,page,label}]` | `{count}` | uploadMarkers ✓ |
+| POST | `/v1/lectures/{id}/process` | `{options}` | `{job_id}` (202) | startProcessing ✓ |
+| GET | `/v1/jobs/{id}` | – | `{state: queued\|running\|done\|failed, stage, progress 0-100, error, pdf_ready, repairs}` — **runs one stage per poll** (`AUTO_ADVANCE_ON_POLL`, `?advance=0` to just read) | jobStatus ✓ |
+| POST | `/v1/jobs/{id}/advance` | – | same as above; also resumes `failed` jobs | – |
+| GET | `/v1/lectures/{id}/summary.pdf` | – | `application/pdf` (501 if no PDF renderer) | downloadSummaryPdf ✓ |
+| GET | `/v1/lectures/{id}/summary.html` / `summary.json` | – | RTL HTML / `{summary,repairs,transcript}` | – |
 
-Client upload example:
-```ts
-import { upload } from "@vercel/blob/client";
-const blob = await upload(file.name, file, {
-  access: "public", handleUploadUrl: "/api/upload", multipart: true,
-  clientPayload: JSON.stringify({ token: API_TOKEN }),
-});
-await fetch(`/api/lectures/${id}`, { method: "PATCH", body: JSON.stringify({ audioUrl: blob.url }) });
-```
+Legacy `/api/*` routes (web scaffold: `/api/courses`, `/api/jobs/{id}/advance`, `/api/upload` Blob token) are kept.
 
-## What's real vs stubbed
-- **Real:** CRUD for courses/lectures/jobs, stage machine, Blob client-upload route, Gemini ASR (Files API upload of audio + slides as context) and summary with JSON output, RTL HTML study document with LTR-isolated English terms.
-- **Stubbed / TODO:**
-  - `repair` stage — the core He/En code-switch term repair (edits with evidence from slides + course glossary/context PDF) returns `[]` for Gemini.
-  - PDF: the `pdf` stage emits print-ready RTL **HTML**; real PDF via **typst-wasm** from `templates/study.typ` is TODO (fonts must be bundled).
-  - Course context PDF is stored but not yet used in prompts. PPTX → PDF conversion not handled (Gemini may not accept PPTX — verify).
-  - Gemini Files API upload buffers the whole file in function memory (fine for ≤~100 MB on 2 GB; verify) and must finish within 300 s; long lectures may need splitting or Workflows.
-  - Auth is a shared token; audio auto-delete after processing is not implemented yet; Blob objects are public-with-random-suffix.
+### Pipeline details
+- **ASR**: one audio segment per advance call (offsets = cumulative `duration`), so long lectures never exceed 300 s per call. Files ≤15 MB are sent inline; bigger ones via the Gemini Files API.
+- **Repair**: Gemini returns an **edit list** `[{segment,span,replacement,evidence,confidence}]` grounded in slide text + course-pack excerpts; edits with confidence ≥0.6 are applied to a `repaired` transcript, originals kept. TODO: phonetic pre-pass.
+- **Course-context pack**: PDF text extracted once (`unpdf`) into `courses.context_text`; each prompt gets top lexical-match ~1.2k-char chunks (≤5–6k chars total, `src/lib/context.ts`), never the whole PDF. Slides stay the primary source. TODO: embeddings.
+- **PDF**: RTL HTML → PDF with headless Chrome (`puppeteer-core`, system Chrome). Works on the box/self-host. On Vercel there is no Chrome → falls back to HTML and `summary.pdf` returns 501. TODO: `@sparticuz/chromium` or typst-wasm.
+- **Uploads**: multipart goes through the function and is saved to Vercel Blob if `BLOB_READ_WRITE_TOKEN`, else `data/uploads/` (local playtesting). **On Vercel the 4.5 MB body limit** means Android segments must go via Blob client upload (`/api/upload`) + JSON `{url}` to the same endpoints — Android client change still TODO.
+- **Raw audio deletion**: after the PDF stage, segment files are deleted and URLs nulled (`DELETE_RAW_AUDIO=true` default).
+- Gemini: default `gemini-3.5-flash` (2.5-flash is closed to new keys), fallbacks on 503 via `GEMINI_FALLBACK_MODELS`, retry with backoff.
 
-## Privacy
-Public repo: never commit keys, `.env*`, or lecture audio (gitignored). Get the lecturer's OK before recording.
+Full job script: `scripts/mock-job.sh [base] [audio] [context.pdf] [slides.pdf]` — see TEST.md.
