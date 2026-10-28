@@ -24,14 +24,22 @@ async function uploadToGemini(ai: GoogleGenAI, url: string, fallbackMime: string
   return createPartFromUri(f.uri!, f.mimeType || mimeType);
 }
 
-/** Retry transient 429/503 ("high demand") with backoff; stays well under the 300s function limit. */
-async function withRetry<T>(f: (model: string) => Promise<T>, tries = 4): Promise<T> {
+/**
+ * Retry transient 429/500/503 ("high demand") with jittered exponential backoff, rotating fallback models.
+ * Bounded by GEMINI_RETRIES (default 5) and a total wait budget GEMINI_RETRY_BUDGET_MS (default 90s) so a call
+ * never hangs a job: past the budget the stage fails and can be resumed with POST /v1/jobs/{id}/retry.
+ */
+async function withRetry<T>(f: (model: string) => Promise<T>, tries = Number(process.env.GEMINI_RETRIES || 5)): Promise<T> {
   const ms = models();
+  const budget = Number(process.env.GEMINI_RETRY_BUDGET_MS || 90_000);
+  const start = Date.now();
   for (let i = 0; ; i++) {
     try { return await f(ms[i % ms.length]); } catch (e) {
       const msg = (e as Error).message ?? "";
-      if (i >= tries - 1 || !/\b(429|500|503)\b|UNAVAILABLE|RESOURCE_EXHAUSTED/.test(msg)) throw e;
-      await new Promise((r) => setTimeout(r, 2000 * 2 ** i));
+      if (i >= tries - 1 || !/\b(429|500|503)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded/i.test(msg)) throw e;
+      const wait = Math.min(30_000, 3000 * 2 ** i) * (0.75 + Math.random() * 0.5);
+      if (Date.now() - start + wait > budget) throw e;
+      await new Promise((r) => setTimeout(r, wait));
     }
   }
 }

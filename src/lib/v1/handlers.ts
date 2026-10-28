@@ -9,7 +9,7 @@ import { db, ensureDb, schema } from "@/db";
 import { pdfToText } from "../context";
 import { isPptx, pptxToText } from "../pptx";
 import { bad, id, notFound } from "../http";
-import { advanceJob, progressOf, type Artifacts } from "../pipeline";
+import { advanceJob, progressOf, retryJob, type Artifacts } from "../pipeline";
 import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
 import { isAcceptableUploadUrl, readFileUrl, saveFile } from "../storage";
 
@@ -145,6 +145,15 @@ export async function getJob(jid: string, advance: boolean) {
 
 export async function postAdvance(jid: string) {
   try { return j(jobView(await advanceJob(jid))); } catch { return notFound(); }
+}
+
+/** POST /v1/jobs/{id}/retry[?force=1] — reset failed/stuck job to first incomplete stage, keep finished stage outputs. */
+export async function postRetry(req: Request, jid: string) {
+  const force = new URL(req.url).searchParams.get("force") === "1";
+  const r = await retryJob(jid, force);
+  if (!r.ok && r.reason === "not_found") return notFound();
+  if (!r.ok) return j({ ...jobView(r.job!), error: `job is ${r.job!.stage}; only failed or stuck jobs can be retried (use ?force=1 for a running job)` }, 409);
+  return j(jobView(r.job), 202);
 }
 
 async function latestDone(lid: string) {

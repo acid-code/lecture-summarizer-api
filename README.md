@@ -100,6 +100,7 @@ Implemented in `src/app/v1/[...path]/route.ts` → `src/lib/v1/handlers.ts`. Mat
 | POST | `/v1/lectures/{id}/process` | `{options}` | `{job_id}` (202) | startProcessing ✓ |
 | GET | `/v1/jobs/{id}` | – | `{state: queued\|running\|done\|failed, stage, progress 0-100, error, pdf_ready, repairs}` — **runs one stage per poll** (`AUTO_ADVANCE_ON_POLL`, `?advance=0` to just read) | jobStatus ✓ |
 | POST | `/v1/jobs/{id}/advance` | – | same as above; also resumes `failed` jobs | – |
+| POST | `/v1/jobs/{id}/retry` | – (`?force=1` for a running job) | job view (202); resets a `failed` or stuck (no update for `JOB_STUCK_MS`, default 10 min) job to its first incomplete stage, clears `error`, keeps finished stage outputs (no ASR redo). 409 if done/running, 404 unknown | retryJob ✓ |
 | GET | `/v1/lectures/{id}/summary.pdf` | – | `application/pdf` (501 only if `PDF_RENDERER=html` or Chromium fails to launch) | downloadSummaryPdf ✓ |
 | GET | `/v1/lectures/{id}/summary.html` / `summary.json` | – | RTL HTML / `{summary,repairs,transcript}` | – |
 
@@ -117,6 +118,6 @@ Legacy `/api/*` routes (web scaffold: `/api/courses`, `/api/jobs/{id}/advance`, 
   - JSON `{url}` is only accepted for `https://*.blob.vercel-storage.com` or `local:data/uploads/...` (no SSRF / path traversal).
   - The Android app uses Blob when `/v1/uploads` says `blob` and the file is > 4 MB, else multipart.
 - **Raw audio deletion**: after the PDF stage, segment files are deleted and URLs nulled (`DELETE_RAW_AUDIO=true` default).
-- Gemini: default `gemini-3.5-flash` (2.5-flash is closed to new keys), fallbacks on 503 via `GEMINI_FALLBACK_MODELS`, retry with backoff.
+- Gemini: default `gemini-3.5-flash` (2.5-flash is closed to new keys), fallbacks on 503 via `GEMINI_FALLBACK_MODELS`, retry with jittered backoff (`GEMINI_RETRIES`, default 5; total wait capped by `GEMINI_RETRY_BUDGET_MS`, default 90 s). If still failing, the job goes `failed` with `error: "<stage>: …"`; call `POST /v1/jobs/{id}/retry` later (the Android Retry button does this).
 
 Full job script: `scripts/mock-job.sh [base] [audio] [context.pdf] [slides.pdf]` — see TEST.md.

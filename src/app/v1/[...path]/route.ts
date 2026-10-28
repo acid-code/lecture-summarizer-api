@@ -39,6 +39,7 @@ async function route(req: Request, { params }: Ctx) {
     if (a === "jobs" && b) {
       if (!c && m === "GET") return h.getJob(b, process.env.AUTO_ADVANCE_ON_POLL !== "false" && new URL(req.url).searchParams.get("advance") !== "0");
       if (c === "advance" && m === "POST") return h.postAdvance(b);
+      if (c === "retry" && m === "POST") return h.postRetry(req, b);
     }
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 400 });

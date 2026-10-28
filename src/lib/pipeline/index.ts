@@ -37,6 +37,35 @@ export function progressOf(stage: string): number {
   return i < 0 ? 0 : Math.round((i / (STAGES.length - 1)) * 100);
 }
 
+/** First stage whose output is missing — prior successful stage outputs are kept and not redone. */
+export function resumeStage(a: Artifacts): Stage {
+  if (!a.asrComplete) return "asr";
+  return (["repair", "summary", "pdf"] as const).find((s) => !a[s]) ?? "done";
+}
+
+/** A non-terminal job not updated for this long is considered stuck (crashed/timed-out invocation). */
+export const STUCK_MS = Number(process.env.JOB_STUCK_MS || 10 * 60 * 1000);
+
+export type RetryResult = { ok: true; job: typeof schema.jobs.$inferSelect } | { ok: false; reason: "not_found" | "not_retryable"; job?: typeof schema.jobs.$inferSelect };
+
+/**
+ * Reset a failed (or stuck) job to its first incomplete stage and clear the error.
+ * Artifacts are kept, so e.g. a completed ASR is not redone after a Gemini 503 in summary.
+ * `force` also allows retrying a running job that is not (yet) considered stuck.
+ */
+export async function retryJob(jobId: string, force = false): Promise<RetryResult> {
+  await ensureDb();
+  const job = await db.query.jobs.findFirst({ where: eq(schema.jobs.id, jobId) });
+  if (!job) return { ok: false, reason: "not_found" };
+  const stuck = job.stage !== "done" && job.stage !== "failed" && Date.now() - job.updatedAt > STUCK_MS;
+  if (job.stage === "done" || (job.stage !== "failed" && !stuck && !force)) return { ok: false, reason: "not_retryable", job };
+  const a = JSON.parse(job.artifacts) as Artifacts;
+  const stage = resumeStage(a);
+  const [row] = await db.update(schema.jobs).set({ stage, error: null, updatedAt: Date.now() })
+    .where(eq(schema.jobs.id, jobId)).returning();
+  return { ok: true, job: row };
+}
+
 /**
  * Runs exactly ONE unit of work per call so each invocation fits the Vercel Hobby 300s limit.
  * ASR runs one audio segment per call (stays in "asr" until all segments are transcribed).
@@ -56,9 +85,7 @@ export async function advanceJob(jobId: string) {
   const a = JSON.parse(job.artifacts) as Artifacts;
   const ai = getProvider();
 
-  const current: Stage = job.stage === "failed"
-    ? (!a.asrComplete ? "asr" : (["repair", "summary", "pdf"] as const).find((s) => !a[s]) ?? "done")
-    : job.stage;
+  const current: Stage = job.stage === "failed" ? resumeStage(a) : job.stage;
   let next = STAGES[STAGES.indexOf(current) + 1] as Stage | undefined;
   try {
     switch (current) {

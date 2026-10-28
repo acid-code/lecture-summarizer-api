@@ -43,3 +43,14 @@ curl -s "${H[@]}" -XPOST $B/lectures/$L/audio/segments -H 'content-type: applica
 ```
 (`duration` is seconds.) Same JSON `{url}` for `/lectures/{id}/slides` and `/lectures/{id}/context`. Locally (no Blob token) `/v1/uploads` → `{"mode":"multipart"}`; keep using `-F file=@...`.
 Not yet tested against a real Blob store (no token on the box).
+
+## Retrying a failed job (e.g. Gemini 503)
+
+```bash
+B=http://localhost:3000/v1; J=<job_id>
+curl -s $B/jobs/$J?advance=0 | jq '{state,stage,error}'   # state: failed, error: "summary: ... 503 ..."
+curl -s -XPOST $B/jobs/$J/retry | jq '{state,stage,error}' # 202, stage: summary (first incomplete), error: null
+curl -s $B/jobs/$J | jq .stage                              # polling continues; ASR/repair are NOT redone
+curl -s -XPOST $B/jobs/$J/retry                             # on a done/running job → 409 (use ?force=1 for running)
+```
+Stuck jobs (no update for `JOB_STUCK_MS`, default 10 min) are retryable too. Gemini retry knobs: `GEMINI_RETRIES` (5), `GEMINI_RETRY_BUDGET_MS` (90000).
