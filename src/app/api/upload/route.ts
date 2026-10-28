@@ -3,7 +3,8 @@ import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 /**
  * Token route for Vercel Blob CLIENT uploads. The browser/phone uploads audio + slides directly
  * to Blob, bypassing the 4.5 MB function body limit. Then PATCH /api/lectures/{id} with the URL.
- * Client: `upload(name, file, { access: "public", handleUploadUrl: "/api/upload", multipart: true,
+ * The Blob store is private, so clients MUST upload with access "private".
+ * Client: `upload(name, file, { access: "private", handleUploadUrl: "/api/upload", multipart: true,
  *          clientPayload: JSON.stringify({ token }) })` from "@vercel/blob/client".
  */
 export async function POST(req: Request) {

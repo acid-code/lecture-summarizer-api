@@ -11,7 +11,7 @@ import { isPptx, pptxToText } from "../pptx";
 import { bad, id, notFound } from "../http";
 import { advanceJob, progressOf, retryJob, type Artifacts } from "../pipeline";
 import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
-import { isAcceptableUploadUrl, readFileUrl, saveFile } from "../storage";
+import { blobAccess, isAcceptableUploadUrl, readFileUrl, saveFile } from "../storage";
 
 const j = (b: unknown, status = 200) => Response.json(b, { status });
 
@@ -198,7 +198,7 @@ export async function createUpload(req: Request) {
     mode: "blob", method: "PUT", pathname,
     put_url: `${apiBase}/?${new URLSearchParams({ pathname })}`,
     headers: {
-      authorization: `Bearer ${token}`, "x-api-version": "13", "x-vercel-blob-access": "public",
+      authorization: `Bearer ${token}`, "x-api-version": "13", "x-vercel-blob-access": blobAccess(),
       "x-content-type": p.data.content_type, "x-add-random-suffix": "1",
     },
     expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),

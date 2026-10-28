@@ -48,6 +48,8 @@ Drizzle ORM over **libsql**:
 - Tables are auto-created on first request (`ensureDb`). `npm run db:push` syncs via drizzle-kit if you change the schema.
 
 ### 3. Vercel Blob
+
+The Blob store must be **private** — the API uploads and reads with `access: "private"` so lecture audio is never world-readable.
 Vercel dashboard → Storage → Create Blob store → connect to project. `BLOB_READ_WRITE_TOKEN` is injected automatically; pull it locally with `vercel env pull .env.local`. Without it, generated artifacts are written to `./data/artifacts` and client uploads are unavailable.
 
 ## Local run
