@@ -9,6 +9,37 @@ export const hasNiqqud = (s: string) => /[\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\
 export function stripTranscript<T extends Transcript>(t: T): T {
   return { ...t, segments: (t.segments ?? []).map((s) => ({ ...s, text: stripNiqqud(s.text) })) };
 }
+/* ---------- Deterministic Hebrew cleanup (high precision, runs after niqqud strip) ---------- */
+const HE = "\u05D0-\u05EA";
+/** Function words a stray prefix letter must not be glued onto ("ה של ה RNA" is a hesitation, not "השל"). */
+const NO_JOIN = new Set(["של", "את", "זה", "זו", "זאת", "על", "עם", "אם", "גם", "לא", "כן", "אז", "או", "כי", "אה", "אהה", "ה", "ו", "ב", "ל", "מ", "ש", "כ", "יש", "אין", "הוא", "היא", "הם", "הן", "אני", "אתה", "את", "אנחנו", "מה", "מי", "איך", "פה", "כאן", "שם", "עוד", "רק", "כל", "אבל", "אחד", "אחת", "כמו"]);
+/** Curated ASR confusions seen in real lectures. Whole words only (an optional prefix ו/ה/ב/כ/ל/מ/ש is kept). */
+const HE_FIXES: [string, string][] = [
+  ["הודם", "הקודם"],
+  ["שרבה", "שהרבה"],
+  ["יכלים", "יכולים"],
+  ["סגנל", "סיגנל"],
+  ["ראקציה", "ריאקציה"],
+  ["ביאולוגיה", "ביולוגיה"],
+];
+const FIX_RES = HE_FIXES.map(([bad, good]) => [new RegExp(`(?<![${HE}])([ובכלמשה]{0,2})${bad}(?![${HE}])`, "g"), good] as const);
+/** 1) glue a lone prefix letter (ב/כ/ל/מ/ו/ש/ה) to the following Hebrew word ("ב ריכוזים"→"בריכוזים");
+ *  a lone ה before a word that already starts with ה is dropped ("ה הקפסיד"→"הקפסיד"); 2) curated word fixes. */
+export function cleanHebrew(s: string): string {
+  if (!s) return s;
+  let out = s.replace(new RegExp(`(?<![${HE}'"׳״\\-])([בכלמושה]) ([${HE}]{2,})(?![${HE}'׳])`, "g"), (m, p: string, w: string) => {
+    if (NO_JOIN.has(w)) return m;
+    if (p === "ה" && w.startsWith("ה")) return w;
+    if (p === w[0] && p !== "ו") return m; // ambiguous doubling — leave it
+    return p + w;
+  });
+  for (const [re, good] of FIX_RES) out = out.replace(re, (_m, pre: string) => pre + good);
+  return out;
+}
+/** niqqud strip + deterministic Hebrew cleanup on every segment. */
+export function cleanTranscript<T extends Transcript>(t: T): T {
+  return { ...t, segments: (t.segments ?? []).map((s) => ({ ...s, text: cleanHebrew(stripNiqqud(s.text)) })) };
+}
 export const NO_NIQQUD = `NEVER emit niqqud, Hebrew vowel points or cantillation marks (Unicode U+0591–U+05C7). Write plain, unpointed Hebrew only (כתיב מלא).`;
 
 const fmt = (t: Transcript) => t.segments.map((s, i) => `#${i} [${s.start}-${s.end}s] ${s.text}`).join("\n");
@@ -16,6 +47,10 @@ const fmt = (t: Transcript) => t.segments.map((s, i) => `#${i} [${s.start}-${s.e
 const ORTHO = `HEBREW ORTHOGRAPHY — the ASR often writes Hebrew words by sound, so fix misspelled Hebrew words to their correct
 dictionary/scientific spelling. Common confusions: כ/ח/ק (ריקוזים→ריכוזים, קימיה→כימיה), ב/ו, ט/ת, ס/ש/צ (שׂ), א/ע/ה,
 כ/כּ vs ק at word start, missing/extra matres lectionis (י/ו), final letters (ך ם ן ף ץ), split/merged words and prefixes (ה,ו,ב,כ,ל,מ,ש).
+PREFIXES: the one-letter prefixes ב כ ל מ ו ש ה are ALWAYS written attached to the next word — a lone prefix letter followed by a
+space is an ASR split: join it ("ב ריכוזים"→"בריכוזים", "ה נדבק"→"הנדבק"). Short common words are often mis-heard too — fix them
+even without slide evidence when the intended word is clear from context: dropped/garbled ק,ה,ו,י inside function words
+(הודם→הקודם, שרבה→שהרבה, יכלים→יכולים, אתו→אותו, מאד→מאוד). These are spelling fixes, NOT rephrasing: keep every word that was said.
 Domain terms (biology, chemistry, biochemistry, physics, math, engineering, CS) must use the standard academic Hebrew
 spelling or the English term exactly as on the slides/course pack (enzyme names, units, reagents, acronyms like ELISA, pH, mM).`;
 
@@ -52,6 +87,8 @@ Return [] if nothing to fix.`;
 export function spellingPrompt(t: Transcript, ctx: LectureContext, offset = 0) {
   return `Proofread ONLY the Hebrew spelling in this ASR transcript of a Hebrew lecture ("${ctx.title}").
 Find Hebrew words written phonetically/incorrectly and give the correct spelling. Ignore style, grammar and punctuation.
+Be thorough: check EVERY Hebrew word, including short function words and prefixes (not only technical terms). Do not be shy —
+a clear misspelling of a common word should be fixed with confidence ≥0.7. Still never rephrase, reorder, drop or add words.
 ${ORTHO}
 ${NO_NIQQUD}
 ${RULES}
@@ -110,5 +147,5 @@ export function applyRepairs(t: Transcript, repairs: Repair[], min = 0.6): Trans
     const targets = r.segment != null && segs[r.segment] ? [segs[r.segment]] : segs;
     for (const s of targets) s.text = s.text.split(r.span).join(r.replacement);
   }
-  return { ...t, segments: segs };
+  return { ...t, segments: segs.map((s) => ({ ...s, text: cleanHebrew(s.text) })) };
 }
