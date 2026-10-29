@@ -133,8 +133,8 @@ Return [] if everything is spelled correctly.`;
 const mmss = (sec: number) => { const t = Math.max(0, Math.floor(sec)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
 const fmtTimed = (t: Transcript) => t.segments.map((s) => `[t=${mmss(s.start)}-${mmss(s.end)}] ${s.text}`).join("\n");
 
-/** Optional end-of-PDF overview ("big picture"), appended AFTER the main summary; written in English. */
-export const BIG_PICTURE = `BIG PICTURE (optional "big_picture" field, written in clear ENGLISH; it is printed at the very END of the PDF,
+/** Optional end-of-PDF overview ("big picture"), appended AFTER the main summary; same language as the summary (Hebrew + English terms by default). */
+export const BIG_PICTURE = `BIG PICTURE (optional "big_picture" field, written in the SAME language as the summary — Hebrew prose with English technical terms (He+En code-switch) for Hebrew lectures; it is printed at the very END of the PDF,
 after the summary and glossary — it supplements the summary and never replaces or reorders it):
 - "intent": 2-4 sentences on what this lecture was trying to TEACH — the underlying idea the examples were meant to illustrate,
   and how this lecture fits the course (use course-pack excerpts only for that framing).
