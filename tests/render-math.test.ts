@@ -53,3 +53,20 @@ test("unparseable leftover TeX is LTR-isolated, not reversed", () => {
   const h = bidi("ראו \\badcmd{ בהרצאה");
   assert.ok(h.includes('<bdi dir="ltr">\\badcmd{</bdi>'), h);
 });
+
+import { bidi as bidi2, renderStudyHtml as rsh } from "../src/lib/pipeline/render";
+test("hebrew bullet with trailing citation isolates whole bracket group", () => {
+  const h = bidi2("ומטרתם להבטיח תכונות על שגיאת המבחן [slide 7, t=6:00-6:18].");
+  assert.ok(h.includes('<bdi class="cite-inline" dir="ltr">[slide 7, t=6:00-6:18]</bdi>.'));
+});
+test("mixed math + cite", () => {
+  const h = bidi2("מבטיחה $P[e_P(A(S)) > \\epsilon] \\le \\delta$ [t=6:35-7:45, slide 8] ו- \\frac{1}{\\epsilon} &amp;gt; 0");
+  assert.ok(h.includes("katex"));
+  assert.ok(h.includes('<bdi class="cite-inline" dir="ltr">[t=6:35-7:45, slide 8]</bdi>'));
+  assert.doesNotMatch(h, /frac\\|left\\|&amp;gt;/);
+  assert.equal(h.match(/cite-inline/g)!.length, 1);
+});
+test("glossary term goes through math", () => {
+  const h = rsh({ title: "t", overview: "", sections: [], glossary: [{ term: "$H_{OR}$", explanation: "מחלקה" }] } as any);
+  assert.match(h, /<dt><bdi class="math"/);
+});

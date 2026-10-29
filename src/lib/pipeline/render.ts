@@ -80,8 +80,24 @@ function plainWithBareMath(s: string): string {
   return out + bidiPlain(s.slice(last));
 }
 
+/** Source citations like `[slide 7, t=6:00-6:18]` / `[t=9:20, slides 8-9]` — isolated whole so brackets never split. */
+const CITE = /\[[^\[\]\n$]*?(?:\bslides?\b|\bt\s*=|\d{1,2}:\d{2})[^\[\]\n$]*\]/gi;
+export function renderCite(c: string): string {
+  return `<bdi class="cite-inline" dir="ltr">${esc(c.replace(/\s+/g, " "))}</bdi>`;
+}
+
 export function bidi(raw: string): string {
-  const s = unent(raw ?? "");
+  const s = unent(unent(raw ?? ""));
+  let out = "", last = 0;
+  for (const m of s.matchAll(CITE)) {
+    out += bidiMath(s.slice(last, m.index));
+    out += renderCite(m[0]); // trailing "." stays outside the isolate (prose)
+    last = m.index! + m[0].length;
+  }
+  return out + bidiMath(s.slice(last));
+}
+
+function bidiMath(s: string): string {
   let out = "", last = 0;
   for (const m of s.matchAll(MATH)) {
     out += plainWithBareMath(s.slice(last, m.index));
@@ -102,10 +118,10 @@ export function renderStudyHtml(s: LectureSummary): string {
 @page{size:A4;margin:18mm}body{font-family:"IBM Plex Sans Hebrew","Noto Sans Hebrew","Heebo",Arial,sans-serif;line-height:1.6}
 bdi{unicode-bidi:isolate;font-family:"Noto Sans","Inter",Arial,sans-serif}.cite{color:#666;font-size:.85em}
 dt{font-weight:bold}h1,h2{line-height:1.3}ul{padding-inline-start:1.2em}.cite{direction:ltr;unicode-bidi:isolate}
-.math{unicode-bidi:isolate;direction:ltr}div.math{text-align:center;margin:.4em 0}.katex{font-size:1.05em}
+.math,.katex,.katex-display{unicode-bidi:isolate;direction:ltr}bdi.math{display:inline-block}div.math{display:block}.cite-inline{unicode-bidi:isolate;direction:ltr;white-space:nowrap;color:#666;font-size:.85em}div.math{text-align:center;margin:.4em 0}.katex{font-size:1.05em}
 </style></head><body>
 <h1>${bidi(s.title)}</h1>${s.transcript_thin ? `<p class="cite" style="direction:rtl">⚠ התמלול של ההקלטה קצר/חסר ביחס לשקפים — חלק מהסיכום מבוסס על השקפים בלבד.</p>` : ""}<p>${bidi(s.overview)}</p>
-${s.sections.map((x) => `<h2>${bidi(x.heading)}</h2><ul>${x.bullets.map((b) => `<li>${bidi(b)}</li>`).join("")}</ul>${x.citation ? `<p class="cite">${esc(x.citation)}</p>` : ""}`).join("\n")}
-<h2>מילון מונחים</h2><dl>${s.glossary.map((g) => `<dt><bdi dir="ltr">${esc(g.term)}</bdi></dt><dd>${bidi(g.explanation)}</dd>`).join("")}</dl>
+${s.sections.map((x) => `<h2>${bidi(x.heading)}</h2><ul>${x.bullets.map((b) => `<li>${bidi(b)}</li>`).join("")}</ul>${x.citation ? `<p class="cite" dir="ltr"><bdi dir="ltr">${esc(unent(x.citation))}</bdi></p>` : ""}`).join("\n")}
+<h2>מילון מונחים</h2><dl>${s.glossary.map((g) => `<dt>${bidi(g.term)}</dt><dd>${bidi(g.explanation)}</dd>`).join("")}</dl>
 </body></html>`;
 }
