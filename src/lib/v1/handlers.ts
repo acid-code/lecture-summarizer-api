@@ -10,7 +10,9 @@ import { pdfToText } from "../context";
 import { isPptx, pptxToText } from "../pptx";
 import { bad, id, notFound } from "../http";
 import { dedupeTranscript } from "../providers/dedupe";
-import { advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, retryJob, type Artifacts } from "../pipeline";
+import { getProvider } from "../providers";
+import { deleteFileUrl } from "../storage";
+import { materialsText, advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, retryJob, type Artifacts } from "../pipeline";
 import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
 import { blobAccess, isAcceptableUploadUrl, readFileUrl, saveFile } from "../storage";
 import { cleanHebrew, stripNiqqud } from "../providers/prompts";
@@ -240,8 +242,13 @@ export async function uploadMarkers(req: Request, lid: string) {
 }
 
 export async function startProcess(req: Request, lid: string) {
-  if (!(await lectureOr404(lid))) return notFound();
+  const l = await lectureOr404(lid); if (!l) return notFound();
   const options = (await req.json().catch(() => ({})))?.options ?? {};
+  // Need audio or materials (lecture decks, or course files) — slides-only summaries don't need a recording.
+  const segs = await db.select().from(schema.segments).where(eq(schema.segments.lectureId, lid));
+  const course = await db.query.courses.findFirst({ where: eq(schema.courses.id, l.courseId) });
+  if (!segs.some((s) => s.url) && !l.audioUrl && !materialsText(l, course) && getProvider().name !== "mock")
+    return j({ error: "lecture has no audio and no slides/PDF materials", audio_missing: true }, 409);
   const job_id = id();
   await db.insert(schema.jobs).values({ id: job_id, lectureId: lid, stage: "queued", artifacts: JSON.stringify({ options }), updatedAt: Date.now() });
   return j({ job_id }, 202);
@@ -251,7 +258,7 @@ function jobView(job: typeof schema.jobs.$inferSelect) {
   const a = JSON.parse(job.artifacts) as Artifacts;
   const state = job.stage === "done" ? "done" : job.stage === "failed" ? "failed" : job.stage === "queued" ? "queued" : "running";
   return { job_id: job.id, lecture_id: job.lectureId, state, stage: job.stage, progress: progressOf(job.stage), error: job.error,
-    pdf_ready: !!a.pdf, transcript_ready: !!(a.repaired ?? a.asr)?.segments?.length, transcript_thin: a.summary?.transcript_thin ?? null,
+    pdf_ready: !!a.pdf, slides_only: !!a.slidesOnly, transcript_ready: !!(a.repaired ?? a.asr)?.segments?.length, transcript_thin: a.summary?.transcript_thin ?? null,
     updated_at: new Date(job.updatedAt).toISOString(), repairs: a.repair ?? null,
     progress_detail: job.stage === "failed" || job.stage === "done" || a.progressDetail?.stage !== job.stage
       ? { stage: job.stage, label: job.stage === "asr" ? `ASR part ${(a.asrParts ?? 0) + 1}` : stageLabel(job.stage) }
@@ -348,6 +355,40 @@ export async function summaryFile(lid: string, kind: "pdf" | "html" | "json") {
   if (kind === "pdf" && !isPdf) return j({ error: "PDF renderer unavailable on this deployment; use summary.html" }, 501);
   const { data } = await readFileUrl(url);
   return new Response(new Uint8Array(data), { headers: { "content-type": isPdf ? "application/pdf" : "text/html; charset=utf-8" } });
+}
+
+/**
+ * DELETE /v1/lectures/{id} — delete the lecture, its jobs, audio segments and material rows, and best-effort delete
+ * every Blob it referenced (audio parts, slide decks, study HTML/PDF). Missing blobs are ignored. Idempotent: 404 → ok.
+ */
+export async function deleteLecture(lid: string) {
+  const l = await lectureOr404(lid);
+  if (!l) return j({ ok: true, deleted: false, lecture_id: lid });
+  const segs = await db.select().from(schema.segments).where(eq(schema.segments.lectureId, lid));
+  const files = await db.select().from(schema.lectureFiles).where(eq(schema.lectureFiles.lectureId, lid));
+  const jobs = await db.select().from(schema.jobs).where(eq(schema.jobs.lectureId, lid));
+  const urls = new Set<string>();
+  for (const s of segs) if (s.url) urls.add(s.url);
+  for (const f of files) urls.add(f.url);
+  if (l.slidesUrl) urls.add(l.slidesUrl);
+  if (l.audioUrl) urls.add(l.audioUrl);
+  for (const job of jobs) { try { const a = JSON.parse(job.artifacts) as Artifacts; if (a.pdf) urls.add(a.pdf); if (a.html) urls.add(a.html); } catch { /* ignore */ } }
+  let blobErrors = 0;
+  await Promise.all([...urls].map((u) => deleteFileUrl(u).catch((e) => { blobErrors++; console.warn("blob delete failed", u, e?.message); })));
+  await db.delete(schema.jobs).where(eq(schema.jobs.lectureId, lid));
+  await db.delete(schema.segments).where(eq(schema.segments.lectureId, lid));
+  await db.delete(schema.lectureFiles).where(eq(schema.lectureFiles.lectureId, lid));
+  await db.delete(schema.lectures).where(eq(schema.lectures.id, lid));
+  return j({ ok: true, deleted: true, lecture_id: lid, jobs: jobs.length, blobs: urls.size, blob_errors: blobErrors });
+}
+
+/** DELETE /v1/jobs/{id} — delete one job and its study HTML/PDF blobs (lecture + materials stay). */
+export async function deleteJob(jid: string) {
+  const job = await db.query.jobs.findFirst({ where: eq(schema.jobs.id, jid) });
+  if (!job) return j({ ok: true, deleted: false, job_id: jid });
+  try { const a = JSON.parse(job.artifacts) as Artifacts; for (const u of [a.pdf, a.html]) if (u) await deleteFileUrl(u).catch(() => {}); } catch { /* ignore */ }
+  await db.delete(schema.jobs).where(eq(schema.jobs.id, jid));
+  return j({ ok: true, deleted: true, job_id: jid });
 }
 
 export { ensureDb };

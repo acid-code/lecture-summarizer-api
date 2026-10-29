@@ -12,6 +12,8 @@ import { renderStudyHtml } from "./render";
 export interface Artifacts {
   asr?: Transcript; /** ASR before dedupe (append-only), so later dedupe changes can be re-applied from it */ asrRaw?: Transcript; asrParts?: number; /** next ASR window start (s) inside the current part */ asrWindowStart?: number; asrComplete?: boolean; repair?: Repair[]; repaired?: Transcript;
   summary?: LectureSummary; html?: string; pdf?: string; audioDeleted?: boolean;
+  /** No audio on the server: summary built from lecture slides/PDFs (or course files) only; ASR+repair skipped. */
+  slidesOnly?: boolean;
   /** Detail about the next/current unit of work, for client progress text. */
   progressDetail?: ProgressDetail;
 }
@@ -44,6 +46,12 @@ async function cleanupAudio(lectureId: string) {
   await db.update(schema.segments).set({ url: null }).where(eq(schema.segments.lectureId, lectureId));
   const l = await db.query.lectures.findFirst({ where: eq(schema.lectures.id, lectureId) });
   if (l?.audioUrl) { await deleteFileUrl(l.audioUrl); await db.update(schema.lectures).set({ audioUrl: null }).where(eq(schema.lectures.id, lectureId)); }
+}
+
+/** Materials text usable for a slides-only summary: lecture decks first, else course files. */
+export function materialsText(lecture: { slidesText: string | null }, course?: { contextText: string | null } | null): string | null {
+  const t = lecture.slidesText?.trim() ? lecture.slidesText : course?.contextText?.trim() ? course.contextText : null;
+  return t || null;
 }
 
 /** 0-100 progress for the Android client. */
@@ -105,7 +113,11 @@ export async function reprocessJob(jobId: string, fallback: boolean, force = fal
   if (job.stage !== "done" && job.stage !== "failed" && !stuck && !force) return { ok: false, reason: "not_retryable", job };
   const lecture = await db.query.lectures.findFirst({ where: eq(schema.lectures.id, job.lectureId) });
   const inputs = lecture ? await audioInputs(lecture.id, lecture.audioUrl) : [];
-  if (inputs.length || getProvider().name === "mock") {
+  const course = lecture ? await db.query.courses.findFirst({ where: eq(schema.courses.id, lecture.courseId) }) : null;
+  const old0 = JSON.parse(job.artifacts) as Artifacts;
+  // No audio but materials and no real transcript to fall back on → slides-only full redo (the asr stage switches to slides-only).
+  const slidesOnlyRedo = !inputs.length && !!lecture && !!materialsText(lecture, course) && (old0.slidesOnly || !(old0.asr?.segments?.length));
+  if (inputs.length || slidesOnlyRedo || getProvider().name === "mock") {
     const old = JSON.parse(job.artifacts) as Artifacts & { options?: unknown };
     const a = { options: old.options ?? {} };
     const [row] = await db.update(schema.jobs).set({ stage: "asr", error: null, artifacts: JSON.stringify(a), updatedAt: Date.now() })
@@ -159,6 +171,7 @@ export async function advanceJob(jobId: string) {
   };
   const a = JSON.parse(job.artifacts) as Artifacts;
   const ai = getProvider();
+  if (a.slidesOnly) { ctx.slidesOnly = true; ctx.slidesText = materialsText(lecture, course); }
 
   const current: Stage = job.stage === "failed" ? resumeStage(a) : job.stage;
   let next = STAGES[STAGES.indexOf(current) + 1] as Stage | undefined;
@@ -168,6 +181,15 @@ export async function advanceJob(jobId: string) {
         break;
       case "asr": {
         const inputs = await audioInputs(lecture.id, lecture.audioUrl);
+        const wantSlides = !!(a as { options?: { slides_only?: boolean } }).options?.slides_only;
+        if ((!inputs.length || wantSlides) && ai.name !== "mock" && materialsText(lecture, course)) {
+          // Slides-only: no recording, summarize from presentation/PDF text. Skip ASR + repair.
+          a.slidesOnly = true; a.asr = { language: course?.langPrimary ?? "he", segments: [] }; a.asrComplete = true;
+          a.repair = []; a.repaired = a.asr;
+          next = "summary";
+          break;
+        }
+        if (!inputs.length && ai.name !== "mock") throw new Error("lecture has no audio and no slides/PDF materials");
         if (!inputs.length && ai.name !== "mock") throw new Error("lecture has no audio");
         const list = inputs.length ? inputs : [{ url: "", mime: "audio/mp4", offsetSec: 0 }];
         const done = a.asrParts ?? 0;
@@ -198,6 +220,7 @@ export async function advanceJob(jobId: string) {
         break;
       }
       case "repair":
+        if (a.slidesOnly) { a.repair = []; a.repaired = a.asr; break; }
         a.asr = dedupeTranscript(cleanTranscript(a.asrRaw ?? a.asr!)); // also cleans/dedupes ASR stored before these fixes existed
         delete (a.asr as { dedupedCount?: number }).dedupedCount;
         a.repair = await ai.repairTerms(a.asr, ctx);
@@ -208,7 +231,7 @@ export async function advanceJob(jobId: string) {
         const tr = a.repaired ?? a.asr ?? { language: "he", segments: [] };
         a.summary = await ai.summarize(tr, a.repair ?? [], ctx);
         // Server-side truth wins over the model's flag.
-        a.summary.transcript_thin = isTranscriptThin(tr, ctx.slidesText) || !!a.summary.transcript_thin;
+        a.summary.transcript_thin = a.slidesOnly ? false : isTranscriptThin(tr, ctx.slidesText) || !!a.summary.transcript_thin;
         break;
       }
       case "pdf": {

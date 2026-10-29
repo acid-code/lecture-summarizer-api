@@ -140,7 +140,28 @@ export function isTranscriptThin(t: Transcript | undefined, slidesText?: string 
   return chars < 800 || (slides > 0 && chars < slides * 0.25);
 }
 
+/** Materials-only (no recording): turn slide decks / PDFs into a lecture-style study summary. */
+export function slidesOnlyPrompt(ctx: LectureContext) {
+  const slides = ctx.slidesText ?? "";
+  return `Write a structured study summary in Hebrew (keep English technical terms in English) for the lecture "${ctx.title}".
+There is NO recording of this lecture. The source is the lecture's presentation slides / PDF materials below (text extracted
+per slide/page, slides separated by form-feeds or "=== file ===" headers). Slides are terse bullet points, NOT a summary:
+- Turn them into a real study summary a student can learn from: explain each concept in full sentences, connect ideas,
+  spell out the reasoning/intuition behind formulas and definitions, and add short clarifying examples where they help.
+- Follow the slides' order and topics; group related slides into coherent sections. Do not just copy slide text verbatim.
+- Do not invent topics that are not in the materials; course-pack excerpts are background for terminology/definitions only.
+- Cite slides as [slide N] (or [slide N-M]) at the end of bullets and in each section's "citation". Never use [t=…] times.
+- Set "transcript_thin": false (there is intentionally no transcript).
+Slides / materials:
+${slides.slice(0, 60000) || "(none)"}
+Course-pack excerpts: ${ctx.courseExcerpts?.(slides.slice(0, 4000), 6000) || "(none)"}
+Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}]}.
+MATH: write every formula/equation/symbolic expression as LaTeX — inline \\( ... \\), display $$ ... $$ (it is rendered with KaTeX).
+Escape backslashes correctly for JSON. Never put Hebrew inside math; keep math LTR and self-contained.`;
+}
+
 export function summaryPrompt(t: Transcript, repairs: Repair[], ctx: LectureContext) {
+  if (ctx.slidesOnly) return slidesOnlyPrompt(ctx);
   const text = t.segments.map((s) => s.text).join(" ");
   const thin = isTranscriptThin(t, ctx.slidesText);
   return `Write a structured study summary in Hebrew (keep English technical terms in English) for the lecture "${ctx.title}".

@@ -30,6 +30,7 @@ async function route(req: Request, { params }: Ctx) {
     if (a === "lectures" && !b && m === "POST") return h.createLecture(req);
     if (a === "lectures" && b) {
       if (!c && m === "GET") return h.getLecture(b);
+      if (!c && m === "DELETE") return h.deleteLecture(b);
       if (c === "slides" && m === "POST") return h.uploadSlides(req, b);
       if (c === "context" && m === "POST") {
         const courseId = await h.lectureCourseId(b);
@@ -51,6 +52,7 @@ async function route(req: Request, { params }: Ctx) {
     }
     if (a === "jobs" && !b && m === "GET") return h.listJobs();
     if (a === "jobs" && b) {
+      if (!c && m === "DELETE") return h.deleteJob(b);
       if (!c && m === "GET") return h.getJob(b, process.env.AUTO_ADVANCE_ON_POLL !== "false" && new URL(req.url).searchParams.get("advance") !== "0");
       if (c === "advance" && m === "POST") return h.postAdvance(b);
       if (c === "retry" && m === "POST") return h.postRetry(req, b);

@@ -25,6 +25,8 @@ export interface LectureContext {
   slidesUrl?: string | null;
   /** Extracted slide text (cheap to put in prompts). */
   slidesText?: string | null;
+  /** No audio: summarize from presentation/PDF materials only (no transcript, no [t=] cites). */
+  slidesOnly?: boolean;
   /** Retrieved excerpts from the course-context pack (never the whole PDF). */
   courseExcerpts?: (query: string, budget?: number) => string;
 }
