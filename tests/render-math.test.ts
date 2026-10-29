@@ -78,5 +78,7 @@ test("big picture appendix renders LTR after glossary with math", async () => {
       missed_terms: [{ term: "literal", explanation: "a variable or its negation" }] } });
   assert.ok(h.indexOf("Big picture") > h.indexOf("מילון מונחים"));
   assert.ok(h.includes('dir="ltr"') && h.includes('class="katex"') && h.includes("Terms used in the lecture"));
+  const he = renderStudyHtml({ title: "t", overview: "o", sections: [], glossary: [], big_picture: { intent: "ההרצאה מלמדת קידוד \\(x\\) ל-SAT.", themes: [], missed_terms: [{ term: "literal", explanation: "משתנה או שלילתו" }] } });
+  assert.ok(he.includes('<section class="big-picture" dir="rtl" lang="he">') && he.includes("התמונה הגדולה") && he.includes('class="katex"'), he);
   assert.ok(!renderStudyHtml({ title: "t", overview: "o", sections: [], glossary: [], big_picture: null }).includes("Big picture"));
 });

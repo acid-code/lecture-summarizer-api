@@ -108,15 +108,20 @@ function bidiMath(s: string): string {
   return out + plainWithBareMath(s.slice(last));
 }
 
-/** English LTR "Big picture" appendix after the glossary (optional). */
+/** "Big picture" appendix after the glossary (optional). RTL like the body when it contains Hebrew; LTR only if fully non-Hebrew. Math/cites/Latin stay LTR-isolated via bidi(). */
 export function renderBigPicture(b: LectureSummary["big_picture"]): string {
   if (!b || (!b.intent?.trim() && !b.themes?.length && !b.missed_terms?.length)) return "";
   const themes = (b.themes ?? []).filter((t) => t?.title || t?.explanation);
   const terms = (b.missed_terms ?? []).filter((t) => t?.term);
-  return `<section class="big-picture" dir="ltr" lang="en"><h2>Big picture — what this lecture was trying to teach</h2>
+  const all = [b.intent, ...themes.flatMap((t) => [t.title, t.explanation]), ...terms.flatMap((t) => [t.term, t.explanation])].join(" ");
+  const he = /[\u0590-\u05FF]/.test(all);
+  const [dir, lang, h2, h3] = he
+    ? ["rtl", "he", "התמונה הגדולה — מה ההרצאה ניסתה ללמד", "מונחים שהופיעו בהרצאה"]
+    : ["ltr", "en", "Big picture — what this lecture was trying to teach", "Terms used in the lecture"];
+  return `<section class="big-picture" dir="${dir}" lang="${lang}"><h2>${h2}</h2>
 ${b.intent?.trim() ? `<p>${bidi(b.intent)}</p>` : ""}
 ${themes.map((t) => `<h3>${bidi(t.title ?? "")}</h3><p>${bidi(t.explanation ?? "")}</p>`).join("\n")}
-${terms.length ? `<h3>Terms used in the lecture</h3><dl>${terms.map((g) => `<dt>${bidi(g.term)}</dt><dd>${bidi(g.explanation ?? "")}</dd>`).join("")}</dl>` : ""}
+${terms.length ? `<h3>${h3}</h3><dl>${terms.map((g) => `<dt>${bidi(g.term)}</dt><dd>${bidi(g.explanation ?? "")}</dd>`).join("")}</dl>` : ""}
 </section>`;
 }
 
@@ -130,7 +135,7 @@ export function renderStudyHtml(s: LectureSummary): string {
 @page{size:A4;margin:18mm}body{font-family:"IBM Plex Sans Hebrew","Noto Sans Hebrew","Heebo",Arial,sans-serif;line-height:1.6}
 bdi{unicode-bidi:isolate;font-family:"Noto Sans","Inter",Arial,sans-serif}.cite{color:#666;font-size:.85em}
 dt{font-weight:bold}h1,h2{line-height:1.3}ul{padding-inline-start:1.2em}.cite{direction:ltr;unicode-bidi:isolate}
-.math,.katex,.katex-display{unicode-bidi:isolate;direction:ltr}bdi.math{display:inline-block}div.math{display:block}.cite-inline{unicode-bidi:isolate;direction:ltr;white-space:nowrap;color:#666;font-size:.85em}div.math{text-align:center;margin:.4em 0}.big-picture{direction:ltr;text-align:left;border-top:2px solid #ccc;margin-top:2em;padding-top:.5em;page-break-before:auto}.katex{font-size:1.05em}
+.math,.katex,.katex-display{unicode-bidi:isolate;direction:ltr}bdi.math{display:inline-block}div.math{display:block}.cite-inline{unicode-bidi:isolate;direction:ltr;white-space:nowrap;color:#666;font-size:.85em}div.math{text-align:center;margin:.4em 0}.big-picture[dir=rtl]{direction:rtl;text-align:right}.big-picture[dir=ltr]{direction:ltr;text-align:left}.big-picture{border-top:2px solid #ccc;margin-top:2em;padding-top:.5em;page-break-before:auto}.katex{font-size:1.05em}
 </style></head><body>
 <h1>${bidi(s.title)}</h1>${s.transcript_thin ? `<p class="cite" style="direction:rtl">⚠ התמלול של ההקלטה קצר/חסר ביחס לשקפים — חלק מהסיכום מבוסס על השקפים בלבד.</p>` : ""}<p>${bidi(s.overview)}</p>
 ${s.sections.map((x) => `<h2>${bidi(x.heading)}</h2><ul>${x.bullets.map((b) => `<li>${bidi(b)}</li>`).join("")}</ul>${x.citation ? `<p class="cite" dir="ltr"><bdi dir="ltr">${esc(unent(x.citation))}</bdi></p>` : ""}`).join("\n")}
