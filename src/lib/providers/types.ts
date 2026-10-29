@@ -15,6 +15,8 @@ export interface AudioInput {
   url: string; mime: string; offsetSec: number; durationSec?: number;
   /** Optional ASR window inside this file (seconds, file-relative). Long audio is transcribed in ~6 min windows. */
   windowStart?: number; windowEnd?: number;
+  /** Tail of the transcript before windowStart, so the model continues after it instead of re-transcribing it. */
+  prevText?: string;
 }
 /** `audioEnded` is set when a window starts past the end of the audio (unknown-duration files). */
 export interface WindowTranscript extends Transcript { audioEnded?: boolean }

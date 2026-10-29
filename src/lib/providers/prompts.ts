@@ -21,6 +21,10 @@ const HE_FIXES: [string, string][] = [
   ["סגנל", "סיגנל"],
   ["ראקציה", "ריאקציה"],
   ["ביאולוגיה", "ביולוגיה"],
+  // Hebrew bench (Oct 2026): spellings the ASR emits in "pointed" mode; standard full spelling is unambiguous.
+  ["דפקא", "דווקא"],
+  ["דוקא", "דווקא"],
+  ["מאד", "מאוד"],
 ];
 const FIX_RES = HE_FIXES.map(([bad, good]) => [new RegExp(`(?<![${HE}])([ובכלמשה]{0,2})${bad}(?![${HE}])`, "g"), good] as const);
 /** 1) glue a lone prefix letter (ב/כ/ל/מ/ו/ש/ה) to the following Hebrew word ("ב ריכוזים"→"בריכוזים");
@@ -36,9 +40,16 @@ export function cleanHebrew(s: string): string {
   for (const [re, good] of FIX_RES) out = out.replace(re, (_m, pre: string) => pre + good);
   return out;
 }
-/** niqqud strip + deterministic Hebrew cleanup on every segment. */
+/** True when most letters are neither Hebrew nor Latin — a hallucination (seen: Armenian gibberish over a silent tail). */
+export function isForeignScript(s: string): boolean {
+  const letters = (s ?? "").match(/\p{L}/gu) ?? [];
+  if (letters.length < 4) return false;
+  const ok = letters.filter((c) => /[\u05D0-\u05EAA-Za-z]/.test(c)).length;
+  return ok / letters.length < 0.5;
+}
+/** niqqud strip + deterministic Hebrew cleanup on every segment; drops foreign-script hallucinated segments. */
 export function cleanTranscript<T extends Transcript>(t: T): T {
-  return { ...t, segments: (t.segments ?? []).map((s) => ({ ...s, text: cleanHebrew(stripNiqqud(s.text)) })) };
+  return { ...t, segments: (t.segments ?? []).map((s) => ({ ...s, text: cleanHebrew(stripNiqqud(s.text)) })).filter((s) => !isForeignScript(s.text)) };
 }
 export const NO_NIQQUD = `NEVER emit niqqud, Hebrew vowel points or cantillation marks (Unicode U+0591–U+05C7). Write plain, unpointed Hebrew only (כתיב מלא).`;
 

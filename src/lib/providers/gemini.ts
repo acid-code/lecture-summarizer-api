@@ -93,9 +93,9 @@ export class BadJsonError extends Error {
   constructor(message: string, public raw: string) { super(message); }
 }
 
-async function rawJson(contents: (Part | string)[], schema?: object): Promise<string> {
+async function rawJson(contents: (Part | string)[], schema?: object, maxOutputTokens = 65536): Promise<string> {
   const r = await withRetry((model) => client().models.generateContent({
-    model, contents, config: { responseMimeType: "application/json", maxOutputTokens: 65536, ...(schema ? { responseSchema: schema } : {}) },
+    model, contents, config: { responseMimeType: "application/json", maxOutputTokens, ...(schema ? { responseSchema: schema } : {}) },
   }));
   return r.text ?? "";
 }
@@ -107,11 +107,11 @@ function parse<T>(raw: string): T {
 }
 
 /** Generate + parse JSON; on invalid/truncated JSON re-ask (GEMINI_JSON_RETRIES, default 2) then try a repair prompt. */
-async function json<T>(contents: (Part | string)[], schema?: object, opts: { repair?: boolean } = {}): Promise<T> {
+async function json<T>(contents: (Part | string)[], schema?: object, opts: { repair?: boolean; maxOutputTokens?: number } = {}): Promise<T> {
   const tries = Number(process.env.GEMINI_JSON_RETRIES || 2);
   let last: BadJsonError | undefined;
   for (let i = 0; i < tries; i++) {
-    const raw = await rawJson(contents, schema);
+    const raw = await rawJson(contents, schema, opts.maxOutputTokens);
     try { return parse<T>(raw); } catch (e) { if (!(e instanceof BadJsonError)) throw e; last = e; console.warn(e.message); }
   }
   if (opts.repair !== false && last && last.raw.length < 200_000) {
@@ -134,6 +134,17 @@ const transcriptSchema = {
 };
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 const MIN_SPLIT_SEC = 60;
+/** Output cap for one ASR call: generous for real speech (~10 tokens/s incl. JSON) but stops degenerate repetition
+ *  loops (seen: 70k+ chars of a repeated phrase over a silent tail) from running for minutes and burning quota. */
+const asrTokenCap = (ws?: number, we?: number) => ws !== undefined && we !== undefined ? Math.min(65536, Math.max(4096, Math.round((we - ws) * 30))) : 65536;
+/** Pull every complete {start,end,text} object out of truncated/invalid transcript JSON. */
+export function salvageSegments(raw: string): { start: number; end: number; text: string }[] {
+  const out: { start: number; end: number; text: string }[] = [];
+  const re = /\{\s*"start"\s*:\s*([\d.]+)\s*,\s*"end"\s*:\s*([\d.]+)\s*,\s*"text"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}/g;
+  for (const m of raw.matchAll(re)) { try { out.push({ start: +m[1], end: +m[2], text: JSON.parse(`"${m[3]}"`) }); } catch { /* skip */ } }
+  // Drop a degenerate loop: stop at the 3rd consecutive repeat of the same text.
+  return out.filter((s, i) => !(i >= 2 && s.text === out[i - 1].text && s.text === out[i - 2].text));
+}
 
 export const geminiProvider: AiProvider = {
   name: "gemini",
@@ -146,18 +157,23 @@ export const geminiProvider: AiProvider = {
         `write English terms in Latin script. ${NO_NIQQUD} Slide text for spelling hints:\n${hints}\n` +
         (ws !== undefined && we !== undefined
           ? `ONLY transcribe the part of the audio from ${fmt(ws)} to ${fmt(we)} (${ws}s-${we}s). Timestamps must be absolute ` +
-            `seconds from the start of the file. If the audio ends before ${fmt(ws)}, return {"language":"he","segments":[],"audioEnded":true}. `
+            `seconds from the start of the file. If the audio ends before ${fmt(ws)}, return {"language":"he","segments":[],"audioEnded":true}. `+
+            (audio.prevText ? `Everything before ${fmt(ws)} is ALREADY transcribed; it ended with: «${audio.prevText}». Do NOT transcribe ` +
+              `those words again: start with the speech that follows them, at or after ${fmt(ws)}. ` : "")
           : "") +
         `Return JSON {"language":"he","segments":[{"start":seconds,"end":seconds,"text":string}]} with one segment per ` +
         `sentence (~5-15s each). Transcribe every word verbatim (no summarizing, no skipping). start/end must be the real ` +
         `moments the words are spoken, measured from the audio itself; do not space timestamps evenly. ` +
         `If there is no speech, return {"language":"he","segments":[]}.`,
-    ], transcriptSchema, { repair: false });
+    ], transcriptSchema, { repair: false, maxOutputTokens: asrTokenCap(ws, we) });
 
     // On persistent bad JSON: split the window in half and merge; at the minimum size try the repair path.
     const run = async (ws?: number, we?: number): Promise<WindowTranscript> => {
       try { return await ask(ws, we); } catch (e) {
         if (!(e instanceof BadJsonError)) throw e;
+        // Truncated output (often a repetition loop hitting the token cap): keep the complete segments, no extra calls.
+        const salvaged = salvageSegments(e.raw);
+        if (salvaged.length >= 2) { console.warn(`ASR: salvaged ${salvaged.length} segments from invalid JSON`); return { language: "he", segments: salvaged }; }
         if (ws !== undefined && we !== undefined && we - ws > MIN_SPLIT_SEC * 2) {
           const mid = Math.round((ws + we) / 2);
           const [x, y] = [await run(ws, mid), await run(mid, we)];
@@ -175,11 +191,23 @@ export const geminiProvider: AiProvider = {
       }
     };
     const clean = (t: WindowTranscript, ws?: number, we?: number) => {
+      if (process.env.ASR_DEBUG) console.warn("raw window", ws, we, JSON.stringify(t.segments?.map((s) => [s.start, s.end, s.text.slice(0, 30)])));
       let segs = (t.segments ?? []).filter((s) => typeof s.start === "number" && typeof s.end === "number" && s.text);
       if (ws !== undefined && we !== undefined) {
         // Model sometimes returns window-relative times; detect and shift. Then keep only segments starting inside the window.
         if (segs.length && ws > 0 && segs[0].start < ws - 5 && segs.every((s) => s.start <= we - ws + 5)) segs = segs.map((s) => ({ ...s, start: s.start + ws, end: s.end + ws }));
-        segs = segs.filter((s) => s.start >= ws - 2 && s.start < we);
+        const inside = (x: typeof segs) => x.filter((s) => s.start >= ws - 2 && s.start < we);
+        // Seen on short clips: the model returns the right window's speech with times shifted past the window
+        // (e.g. 202-302s for 120-192s), so the filter would silently drop the whole window. If most segments fall
+        // outside but the returned span fits the window, rebase the block to the window start instead of losing it.
+        const kept = inside(segs);
+        const span = segs.length ? segs[segs.length - 1].start - segs[0].start : 0;
+        if (segs.length >= 2 && kept.length < segs.length / 2 && span <= we - ws + 10) {
+          const shift = ws - segs[0].start;
+          segs = segs.map((s) => ({ ...s, start: Math.max(ws, s.start + shift), end: Math.min(we, Math.max(ws, s.end + shift)) }));
+          console.warn(`ASR window ${fmt(ws)}-${fmt(we)}: rebased ${segs.length} off-window segments by ${shift.toFixed(0)}s`);
+        }
+        segs = inside(segs);
       }
       return segs;
     };

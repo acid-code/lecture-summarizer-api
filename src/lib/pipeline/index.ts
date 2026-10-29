@@ -177,7 +177,8 @@ export async function advanceJob(jobId: string) {
         // Window when duration is unknown or longer than one window; short known parts go in one call.
         const windowed = ai.name !== "mock" && (!known || cur.durationSec! > ASR_WINDOW_SEC * 1.25);
         const we = windowed ? (known ? Math.min(cur.durationSec!, ws + ASR_WINDOW_SEC) : ws + ASR_WINDOW_SEC) : undefined;
-        const t = await ai.transcribe(windowed ? { ...cur, windowStart: ws, windowEnd: we } : cur, ctx);
+        const prevText = ws > 0 ? a.asr?.segments.slice(-2).map((s) => s.text).join(" ").slice(-300) : undefined;
+        const t = await ai.transcribe(windowed ? { ...cur, windowStart: ws, windowEnd: we, prevText } : cur, ctx);
         // Dedupe across windows: Gemini may re-transcribe earlier speech with later timestamps.
         a.asr = dedupeTranscript({ language: t.language, segments: [...(a.asr?.segments ?? []), ...cleanTranscript(t).segments] });
         delete (a.asr as { dedupedCount?: number }).dedupedCount;

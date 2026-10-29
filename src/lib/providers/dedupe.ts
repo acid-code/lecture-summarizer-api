@@ -8,8 +8,9 @@ import type { Transcript } from "./types";
  * transcript then repeats a passage 1-2 more times ~1-2 minutes later, often with different sentence boundaries.
  *
  * Detection is high-precision: a segment is a duplicate when most of its word 3-grams already occurred in kept
- * segments from the preceding LOOKBACK seconds, AND it is either long or part of a run of such segments (a speaker
- * repeating one sentence verbatim is kept; a repeated multi-sentence block is not). Earlier copies are kept.
+ * segments from the preceding LOOKBACK seconds. Copies are re-split and re-worded, so segments are grouped into runs of
+ * "weak" matches (>=50% 3-grams, or short with >=60% words); a run is dropped only when it holds >=2 strong (>=80%)
+ * matches, or is one long (>=10 words) strong match. A speaker repeating one short sentence is kept. Earlier copies win.
  */
 const LOOKBACK_SEC = Number(process.env.DEDUPE_LOOKBACK_SEC || 420);
 const COVER = 0.8;
@@ -22,45 +23,40 @@ export function dedupeTranscript<T extends Transcript>(t: T): T & { dedupedCount
   const segs = t.segments ?? [];
   if (segs.length < 3) return t;
   const words = segs.map((s) => norm(s.text));
-  // coverage[i]: share of segment i's 3-grams (or words for short segments) already seen in the lookback.
-  const kept: number[] = [];
-  const cover: number[] = new Array(segs.length).fill(0);
-  const dup: boolean[] = new Array(segs.length).fill(false);
-  const seen = (i: number) => {
-    const prev = kept.filter((k) => segs[k].start >= segs[i].start - LOOKBACK_SEC && segs[k].start <= segs[i].start + 1);
-    const g3 = new Set(prev.flatMap((k) => grams(words[k], 3)).concat(
-      // also n-grams spanning a sentence boundary of consecutive kept segments
-      prev.slice(1).flatMap((k, x) => grams([...words[prev[x]].slice(-2), ...words[k].slice(0, 2)], 3))));
-    const w1 = new Set(prev.flatMap((k) => words[k]));
+  const n = segs.length;
+  const cover: number[] = new Array(n).fill(0), wcover: number[] = new Array(n).fill(0);
+  for (let i = 1; i < n; i++) {
+    const prev: number[] = [];
+    for (let k = 0; k < i; k++) if (segs[k].start >= segs[i].start - LOOKBACK_SEC) prev.push(k);
+    // earlier text as one word stream, so 3-grams spanning old sentence boundaries also count
+    const stream = prev.flatMap((k) => words[k]);
+    const g3 = new Set(grams(stream, 3)), w1 = new Set(stream);
     const w = words[i];
-    if (w.length >= 4) { const g = grams(w, 3); return g.filter((x) => g3.has(x)).length / g.length; }
-    return w.length ? w.filter((x) => w1.has(x)).length / w.length : 0;
-  };
-  // Pass 1: candidates (cumulatively, so a third copy is checked against kept text only).
-  for (let i = 0; i < segs.length; i++) {
-    cover[i] = seen(i);
-    const cand = cover[i] >= COVER;
-    // Provisional: long candidates are dups on their own; short ones are decided once neighbours are known.
-    if (cand && words[i].length >= 10) dup[i] = true;
-    else if (cand) dup[i] = true; // revisited below
-    if (!dup[i]) kept.push(i);
+    wcover[i] = w.length ? w.filter((x) => w1.has(x)).length / w.length : 0;
+    cover[i] = w.length >= 4 ? (() => { const g = grams(w, 3); return g.filter((x) => g3.has(x)).length / g.length; })() : wcover[i];
   }
-  // Pass 2: a short candidate (< 10 words) is only a dup inside a run with at least one other candidate neighbour.
-  const nb = (j: number) => j >= 0 && j < segs.length && dup[j];
-  for (let i = 0; i < segs.length; i++) {
-    if (!dup[i] || words[i].length >= 10) continue;
-    if (!nb(i - 1) && !nb(i + 1)) dup[i] = false;
+  const strong = (i: number) => cover[i] >= COVER;
+  const weak = (i: number) => cover[i] >= EDGE_COVER || (words[i].length >= 3 && words[i].length <= 8 && wcover[i] >= 0.6);
+  const dup: boolean[] = new Array(n).fill(false);
+  for (let i = 0; i < n;) {
+    if (!weak(i)) { i++; continue; }
+    let j = i; while (j + 1 < n && weak(j + 1)) j++;
+    const idx = Array.from({ length: j - i + 1 }, (_, x) => i + x);
+    const nStrong = idx.filter(strong).length;
+    if (nStrong >= 2 || idx.some((x) => strong(x) && words[x].length >= 10)) idx.forEach((x) => (dup[x] = true));
+    i = j + 1;
   }
-  // Pass 3: grow confirmed runs (>= 2 segments) by neighbours that are mostly covered (copies re-split differently).
-  const inRun = (i: number) => dup[i] && (nb(i - 1) || nb(i + 1));
-  for (let grew = true; grew;) {
-    grew = false;
-    for (let i = 0; i < segs.length; i++) {
-      if (dup[i] || cover[i] < EDGE_COVER) continue;
-      if ((i > 0 && inRun(i - 1)) || (i + 1 < segs.length && inRun(i + 1))) { dup[i] = true; grew = true; }
-    }
-  }
+  // A short, mostly-covered leftover next to a >60s hole is the tail of a run removed earlier
+  // (dedupe also runs on already-deduped stored transcripts, where the run itself is gone).
+  const kept = segs.map((_, i) => i).filter((i) => !dup[i]);
+  kept.forEach((i, x) => {
+    if (words[i].length > 8 || words[i].length < 3 || wcover[i] < 0.6) return;
+    const gapBefore = x > 0 ? segs[i].start - segs[kept[x - 1]].end : 0;
+    const gapAfter = x + 1 < kept.length ? segs[kept[x + 1]].start - segs[i].end : 0;
+    if (Math.max(gapBefore, gapAfter) > 60) dup[i] = true;
+  });
+  if (process.env.DEDUPE_DEBUG) segs.forEach((s, i) => console.warn(i, s.start.toFixed(0), cover[i].toFixed(2), wcover[i].toFixed(2), dup[i] ? "DUP" : "", s.text.slice(0, 40)));
   const out = segs.filter((_, i) => !dup[i]);
-  const n = segs.length - out.length;
-  return n ? { ...t, segments: out, dedupedCount: n } : t;
+  const removed = n - out.length;
+  return removed ? { ...t, segments: out, dedupedCount: removed } : t;
 }
