@@ -148,7 +148,9 @@ export const geminiProvider: AiProvider = {
           ? `ONLY transcribe the part of the audio from ${fmt(ws)} to ${fmt(we)} (${ws}s-${we}s). Timestamps must be absolute ` +
             `seconds from the start of the file. If the audio ends before ${fmt(ws)}, return {"language":"he","segments":[],"audioEnded":true}. `
           : "") +
-        `Return JSON {"language":"he","segments":[{"start":seconds,"end":seconds,"text":string}]} with ~30-60s segments. ` +
+        `Return JSON {"language":"he","segments":[{"start":seconds,"end":seconds,"text":string}]} with one segment per ` +
+        `sentence (~5-15s each). Transcribe every word verbatim (no summarizing, no skipping). start/end must be the real ` +
+        `moments the words are spoken, measured from the audio itself; do not space timestamps evenly. ` +
         `If there is no speech, return {"language":"he","segments":[]}.`,
     ], transcriptSchema, { repair: false });
 
@@ -172,14 +174,36 @@ export const geminiProvider: AiProvider = {
         }
       }
     };
-    const t = await run(audio.windowStart, audio.windowEnd);
-    let segs = (t.segments ?? []).filter((s) => typeof s.start === "number" && typeof s.end === "number" && s.text);
-    if (audio.windowStart !== undefined && audio.windowEnd !== undefined) {
-      const ws = audio.windowStart, we = audio.windowEnd;
-      // Model sometimes returns window-relative times; detect and shift. Then keep only segments starting inside the window.
-      if (segs.length && ws > 0 && segs[0].start < ws - 5 && segs.every((s) => s.start <= we - ws + 5)) segs = segs.map((s) => ({ ...s, start: s.start + ws, end: s.end + ws }));
-      segs = segs.filter((s) => s.start >= ws - 2 && s.start < we);
-    }
+    const clean = (t: WindowTranscript, ws?: number, we?: number) => {
+      let segs = (t.segments ?? []).filter((s) => typeof s.start === "number" && typeof s.end === "number" && s.text);
+      if (ws !== undefined && we !== undefined) {
+        // Model sometimes returns window-relative times; detect and shift. Then keep only segments starting inside the window.
+        if (segs.length && ws > 0 && segs[0].start < ws - 5 && segs.every((s) => s.start <= we - ws + 5)) segs = segs.map((s) => ({ ...s, start: s.start + ws, end: s.end + ws }));
+        segs = segs.filter((s) => s.start >= ws - 2 && s.start < we);
+      }
+      return segs;
+    };
+    // Fabricated timing check: flash-lite sometimes transcribes only part of a window and spreads it evenly over the whole
+    // range (≈half the normal text density, long uniform segments) which stretches time ~2x vs the audio. Re-ask in halves.
+    const suspicious = (segs: { start: number; end: number; text: string }[], ws: number, we: number) => {
+      if (segs.length < 3 || we - ws < MIN_SPLIT_SEC * 2) return false;
+      const span = Math.max(1, segs[segs.length - 1].end - segs[0].start);
+      const chars = segs.reduce((n, s) => n + s.text.length, 0);
+      const avgLen = span / segs.length;
+      return chars / span < 6 && avgLen > 25;
+    };
+    const runChecked = async (ws?: number, we?: number, depth = 0): Promise<{ t: WindowTranscript; segs: ReturnType<typeof clean> }> => {
+      const t = await run(ws, we);
+      const segs = clean(t, ws, we);
+      if (ws !== undefined && we !== undefined && depth < 2 && suspicious(segs, ws, we)) {
+        const mid = Math.round((ws + we) / 2);
+        const a = await runChecked(ws, mid, depth + 1), b = await runChecked(mid, we, depth + 1);
+        return { t: { language: a.t.language || b.t.language, segments: [], audioEnded: a.t.audioEnded && b.t.audioEnded }, segs: [...a.segs, ...b.segs] };
+      }
+      return { t, segs };
+    };
+    const { t, segs: raw } = await runChecked(audio.windowStart, audio.windowEnd);
+    const segs = raw.sort((a, b) => a.start - b.start);
     // Shift into lecture time (multi-segment uploads).
     return { language: t.language || "he", audioEnded: t.audioEnded, segments: segs.map((s) => ({ ...s, start: s.start + audio.offsetSec, end: s.end + audio.offsetSec })) };
   },
