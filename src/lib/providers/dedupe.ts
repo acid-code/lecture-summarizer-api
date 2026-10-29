@@ -36,7 +36,8 @@ export function dedupeTranscript<T extends Transcript>(t: T): T & { dedupedCount
     cover[i] = w.length >= 4 ? (() => { const g = grams(w, 3); return g.filter((x) => g3.has(x)).length / g.length; })() : wcover[i];
   }
   const strong = (i: number) => cover[i] >= COVER;
-  const weak = (i: number) => cover[i] >= EDGE_COVER || (words[i].length >= 3 && words[i].length <= 8 && wcover[i] >= 0.6);
+  const weak = (i: number) => cover[i] >= EDGE_COVER ||
+    (words[i].length >= 3 && words[i].length <= 8 && wcover[i] >= 0.6 && (cover[i] > 0 || words[i].length <= 5));
   const dup: boolean[] = new Array(n).fill(false);
   for (let i = 0; i < n;) {
     if (!weak(i)) { i++; continue; }
