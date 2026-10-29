@@ -33,6 +33,8 @@ async function route(req: Request, { params }: Ctx) {
       if (c === "audio" && d === "segments" && m === "POST") return h.uploadSegment(req, b);
       if (c === "markers" && m === "POST") return h.uploadMarkers(req, b);
       if (c === "process" && m === "POST") return h.startProcess(req, b);
+      if (m === "GET" && c === "files" && !d) return h.listFiles(b);
+      if (m === "GET" && c === "files" && d) return h.getFile(b, d);
       if (m === "GET" && c === "transcript") return h.getTranscript(b);
       if (m === "GET" && c === "summary.pdf") return h.summaryFile(b, "pdf");
       if (m === "GET" && c === "summary.html") return h.summaryFile(b, "html");

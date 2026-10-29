@@ -62,22 +62,80 @@ export async function getLecture(lid: string) {
   const segs = await db.select().from(schema.segments).where(eq(schema.segments.lectureId, lid));
   const jobs = await db.select({ job_id: schema.jobs.id, stage: schema.jobs.stage }).from(schema.jobs).where(eq(schema.jobs.lectureId, lid));
   return j({ lecture_id: l.id, course_id: l.courseId, title: l.title, recorded_at: l.recordedAt, slides: !!l.slidesUrl,
-    markers: JSON.parse(l.markers), segments: segs.map((s) => ({ seq: s.seq, duration: s.duration, stored: !!s.url })), jobs });
+    markers: JSON.parse(l.markers), segments: segs.map((s) => ({ seq: s.seq, duration: s.duration, stored: !!s.url })), jobs,
+    files: await filesOf(l, segs) });
 }
 
+/** All materials of a lecture: slide decks (new table, or the legacy single slides_url) + audio segments. */
+async function filesOf(l: typeof schema.lectures.$inferSelect, segs: (typeof schema.segments.$inferSelect)[]) {
+  const rows = await db.select().from(schema.lectureFiles).where(eq(schema.lectureFiles.lectureId, l.id)).orderBy(schema.lectureFiles.createdAt);
+  const docs = rows.map((f) => ({ file_id: f.id, kind: f.kind, name: f.name, mime: f.mime, size: f.size, stored: true,
+    url: `/v1/lectures/${l.id}/files/${f.id}` }));
+  if (!rows.length && l.slidesUrl) docs.push({ file_id: "legacy-slides", kind: "slides", name: l.slidesUrl.split("/").pop()!.replace(/^[\w]+-/, ""),
+    mime: l.slidesUrl.endsWith(".pdf") ? "application/pdf" : "application/octet-stream", size: null, stored: true, url: `/v1/lectures/${l.id}/files/legacy-slides` });
+  const audio = segs.sort((a, b) => a.seq - b.seq).map((s) => ({ file_id: `seg-${s.seq}`, kind: "audio", name: `Audio part ${s.seq + 1}`, mime: s.mime,
+    size: null, stored: !!s.url, duration: s.duration, url: `/v1/lectures/${l.id}/files/seg-${s.seq}` }));
+  return [...docs, ...audio];
+}
+
+/** GET /v1/lectures/{id}/files — materials list. */
+export async function listFiles(lid: string) {
+  const l = await lectureOr404(lid); if (!l) return notFound();
+  const segs = await db.select().from(schema.segments).where(eq(schema.segments.lectureId, lid));
+  return j(await filesOf(l, segs));
+}
+
+/** GET /v1/lectures/{id}/files/{fileId} — stream one stored material (private Blob → client). */
+export async function getFile(lid: string, fid: string) {
+  const l = await lectureOr404(lid); if (!l) return notFound();
+  let url: string | null | undefined, mime = "application/octet-stream", name = fid;
+  if (fid === "legacy-slides") { url = l.slidesUrl; name = url?.split("/").pop() ?? "slides"; }
+  else if (fid.startsWith("seg-")) {
+    const s = await db.query.segments.findFirst({ where: and(eq(schema.segments.lectureId, lid), eq(schema.segments.seq, Number(fid.slice(4)))) });
+    url = s?.url; mime = s?.mime ?? mime; name = `${fid}.m4a`;
+    if (s && !s.url) return j({ error: "audio was deleted after processing (raw-audio cleanup); the phone keeps its local copy" }, 410);
+  } else {
+    const f = await db.query.lectureFiles.findFirst({ where: and(eq(schema.lectureFiles.lectureId, lid), eq(schema.lectureFiles.id, fid)) });
+    url = f?.url; mime = f?.mime ?? mime; name = f?.name ?? name;
+  }
+  if (!url) return notFound();
+  const r = await readFileUrl(url);
+  return new Response(new Uint8Array(r.data), { headers: { "content-type": r.mime || mime,
+    "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(name)}` } });
+}
+
+/**
+ * POST /v1/lectures/{id}/slides — ADDS a deck (PDF/PPTX). Several decks per lecture are supported; re-uploading the
+ * same file name replaces that deck (idempotent retries). ?replace=all clears previous decks first (old one-slot behaviour).
+ */
 export async function uploadSlides(req: Request, lid: string) {
   const l = await lectureOr404(lid); if (!l) return notFound();
   const { fd, json } = await form(req);
-  let url: string | undefined, data: Buffer | undefined, mime = "";
-  if (fd) { const f = await fileFrom(fd, "uploads", `${lid}-slides`); if (!f) return bad("file required"); ({ url, data, mime } = f); }
-  else if (typeof json?.url === "string") { url = json.url; ({ data, mime = "" } = await readFileUrl(url)); }
-  else return bad("multipart file or JSON {url}");
+  let url: string | undefined, data: Buffer | undefined, mime = "", name = "";
+  if (fd) { const f = await fileFrom(fd, "uploads", `${lid}-slides`); if (!f) return bad("file required"); ({ url, data, mime } = f); name = f.name || "slides"; }
+  else if (typeof json?.url === "string") {
+    url = json.url; ({ data, mime = "" } = await readFileUrl(url));
+    if (!mime && typeof json.mime === "string") mime = json.mime;
+    name = typeof json.name === "string" && json.name ? json.name : decodeURIComponent(url.split("/").pop()!.split("?")[0]);
+  }
+  else return bad("multipart file or JSON {url, name?, mime?}");
   // Slide text for prompts (ASR bias, repair, summary): PDF via unpdf, PPTX via pure-JS unzip+XML. "\f" between slides.
-  const slidesText = mime.includes("pdf") || url.endsWith(".pdf") ? await pdfToText(data!).catch(() => null)
-    : isPptx(mime, url) ? (() => { try { return pptxToText(data!) || null; } catch (e) { console.error("pptx extract failed", e); return null; } })()
+  const slidesText = mime.includes("pdf") || url.endsWith(".pdf") || name.toLowerCase().endsWith(".pdf") ? await pdfToText(data!).catch(() => null)
+    : isPptx(mime, url) || name.toLowerCase().endsWith(".pptx") ? (() => { try { return pptxToText(data!) || null; } catch (e) { console.error("pptx extract failed", e); return null; } })()
     : null;
-  await db.update(schema.lectures).set({ slidesUrl: url, slidesText }).where(eq(schema.lectures.id, lid));
-  return j({ ok: true, slides_text_chars: slidesText?.length ?? 0 });
+  if (new URL(req.url).searchParams.get("replace") === "all") await db.delete(schema.lectureFiles).where(eq(schema.lectureFiles.lectureId, lid));
+  else await db.delete(schema.lectureFiles).where(and(eq(schema.lectureFiles.lectureId, lid), eq(schema.lectureFiles.name, name)));
+  // Migrate a legacy one-slot deck into the table the first time a lecture gets a second file.
+  const existing = await db.select().from(schema.lectureFiles).where(eq(schema.lectureFiles.lectureId, lid));
+  if (!existing.length && l.slidesUrl && l.slidesUrl !== url && new URL(req.url).searchParams.get("replace") !== "all")
+    await db.insert(schema.lectureFiles).values({ id: id(), lectureId: lid, kind: "slides", name: l.slidesUrl.split("/").pop()!, mime: "application/octet-stream",
+      url: l.slidesUrl, text: l.slidesText, createdAt: l.createdAt });
+  await db.insert(schema.lectureFiles).values({ id: id(), lectureId: lid, kind: "slides", name, mime: mime || "application/octet-stream", url, text: slidesText,
+    size: data?.length ?? null, createdAt: Date.now() });
+  const all = await db.select().from(schema.lectureFiles).where(eq(schema.lectureFiles.lectureId, lid)).orderBy(schema.lectureFiles.createdAt);
+  const combined = all.filter((f) => f.text).map((f) => (all.length > 1 ? `=== ${f.name} ===\n` : "") + f.text).join("\f") || null;
+  await db.update(schema.lectures).set({ slidesUrl: all[0]?.url ?? url, slidesText: combined }).where(eq(schema.lectures.id, lid));
+  return j({ ok: true, slides_text_chars: slidesText?.length ?? 0, files: all.length });
 }
 
 /** Course-context pack. Stored on the COURSE (shared by all its lectures). Both URL shapes accepted. */

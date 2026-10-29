@@ -42,6 +42,8 @@ export function ensureDb() {
       `CREATE TABLE IF NOT EXISTS lectures (id TEXT PRIMARY KEY, course_id TEXT NOT NULL REFERENCES courses(id), title TEXT NOT NULL, recorded_at TEXT, audio_url TEXT, slides_url TEXT, slides_text TEXT, markers TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL)`,
       `CREATE TABLE IF NOT EXISTS segments (id TEXT PRIMARY KEY, lecture_id TEXT NOT NULL REFERENCES lectures(id), seq INTEGER NOT NULL, started_at TEXT, duration REAL, url TEXT, mime TEXT NOT NULL DEFAULT 'audio/mp4', created_at INTEGER NOT NULL)`,
       `CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, lecture_id TEXT NOT NULL REFERENCES lectures(id), stage TEXT NOT NULL DEFAULT 'queued', error TEXT, artifacts TEXT NOT NULL DEFAULT '{}', updated_at INTEGER NOT NULL)`,
+      `CREATE TABLE IF NOT EXISTS lecture_files (id TEXT PRIMARY KEY, lecture_id TEXT NOT NULL REFERENCES lectures(id), kind TEXT NOT NULL DEFAULT 'slides', name TEXT NOT NULL, mime TEXT NOT NULL, url TEXT NOT NULL, text TEXT, size INTEGER, created_at INTEGER NOT NULL)`,
+      `CREATE INDEX IF NOT EXISTS lecture_files_lecture ON lecture_files(lecture_id)`,
     ], "write");
   })();
   ready.catch(() => { ready = null; });

@@ -37,6 +37,22 @@ export const segments = sqliteTable("segments", {
   createdAt: integer("created_at").notNull(),
 });
 
+/**
+ * Lecture materials: several slide decks / PDFs per lecture (added 2026-10). Legacy lectures.slides_url stays
+ * as "first deck" for old readers; lectures.slides_text is the concatenation of all decks' text.
+ */
+export const lectureFiles = sqliteTable("lecture_files", {
+  id: text("id").primaryKey(),
+  lectureId: text("lecture_id").notNull().references(() => lectures.id),
+  kind: text("kind").notNull().default("slides"),
+  name: text("name").notNull(),
+  mime: text("mime").notNull(),
+  url: text("url").notNull(),
+  text: text("text"),
+  size: integer("size"),
+  createdAt: integer("created_at").notNull(),
+});
+
 export const STAGES = ["queued", "asr", "repair", "summary", "pdf", "done"] as const;
 export type Stage = (typeof STAGES)[number];
 

@@ -136,3 +136,20 @@ Legacy `/api/*` routes (web scaffold: `/api/courses`, `/api/jobs/{id}/advance`, 
   On 429 / `RESOURCE_EXHAUSTED` the next rung is tried immediately (no backoff); a model that hits a daily limit is skipped for 1 h in that process. 500/503 get jittered backoff (`GEMINI_RETRIES`, default 5; total wait capped by `GEMINI_RETRY_BUDGET_MS`, default 90 s). If every rung is out of quota the job goes `failed` with `error: "<stage>: Gemini free daily quota exhausted; retry after reset"` (no raw JSON). Override with `GEMINI_MODEL` (first rung) and `GEMINI_FALLBACK_MODELS` (comma list replacing the rest). Call `POST /v1/jobs/{id}/retry` after reset (the Android Retry button does this).
 
 Full job script: `scripts/mock-job.sh [base] [audio] [context.pdf] [slides.pdf]` — see TEST.md.
+
+## Lecture materials (several files per lecture) — 2026-10
+- New table `lecture_files` (auto-created by `ensureDb`, no manual migration). `POST /v1/lectures/{id}/slides` now **adds** a deck
+  (PDF/PPTX); the same file name replaces that deck (idempotent retries); `?replace=all` restores the old one-slot behaviour.
+  JSON uploads accept `{url, name?, mime?}`.
+- Backward compatible: `lectures.slides_url` = first deck, `lectures.slides_text` = all decks' text joined (`=== name ===` headers),
+  so the pipeline/prompts are unchanged. A legacy single deck is listed as `file_id: "legacy-slides"` and is moved into the table
+  when a second deck is added.
+- `GET /v1/lectures/{id}` adds `files[]`; `GET /v1/lectures/{id}/files` lists decks + audio segments (`seg-N`);
+  `GET /v1/lectures/{id}/files/{file_id}` streams one (410 for audio removed by raw-audio cleanup).
+
+## Math in the study PDF
+Summary text may contain LaTeX: `\( … \)` / `$…$` inline, `$$ … $$` / `\[ … \]` display. `render.ts` converts it with
+**KaTeX** (pure JS) to HTML; `pdf.ts` inlines `fonts/katex-inline.css` (KaTeX CSS + woff2 fonts as data URLs) so Chromium
+prints it into the PDF on Vercel too. Bad TeX shows as red source, never fails the job. Single `$` follows pandoc rules
+(`$5 and $10` stays text). The summary prompt asks Gemini to emit formulas as LaTeX. Regenerate the CSS after a KaTeX upgrade
+(see commit message one-liner in git log). Typst is not used in the Vercel path (native binary).

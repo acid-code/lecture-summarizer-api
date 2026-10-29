@@ -20,7 +20,9 @@ function embeddedFontCss(): string {
     if (!existsSync(p)) return "";
     return `@font-face{font-family:"IBM Plex Sans Hebrew";font-weight:${weight};src:url(data:font/ttf;base64,${readFileSync(p).toString("base64")}) format("truetype")}`;
   };
-  fontCss = face("IBMPlexSansHebrew-Regular.ttf", 400) + face("IBMPlexSansHebrew-Bold.ttf", 700);
+  const katexCss = path.join(process.cwd(), "fonts", "katex-inline.css");
+  fontCss = face("IBMPlexSansHebrew-Regular.ttf", 400) + face("IBMPlexSansHebrew-Bold.ttf", 700)
+    + (existsSync(katexCss) ? readFileSync(katexCss, "utf8") : ""); // KaTeX CSS with woff2 fonts as data: URLs
   return fontCss;
 }
 
@@ -41,7 +43,7 @@ export async function htmlToPdf(html: string): Promise<Buffer | null> {
   if (!browser) return null;
   try {
     const page = await browser.newPage();
-    const withFont = html.replace("<style>", `<style>${embeddedFontCss()}`);
+    const withFont = html.replace("<style>", () => `<style>${embeddedFontCss()}`);
     await page.setContent(withFont, { waitUntil: "load" });
     await page.evaluateHandle("document.fonts.ready");
     return Buffer.from(await page.pdf({ format: "A4", printBackground: true, preferCSSPageSize: true }));

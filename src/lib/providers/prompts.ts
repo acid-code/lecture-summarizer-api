@@ -52,7 +52,9 @@ Term repairs already applied: ${JSON.stringify(repairs)}
 Transcript (lecture time M:SS):
 ${fmtTimed(t) || "(empty)"}
 Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}]}.
-Put cites inline at the end of bullets and in each section's "citation".`;
+Put cites inline at the end of bullets and in each section's "citation".
+MATH: write every formula/equation/symbolic expression as LaTeX — inline \\( ... \\), display $$ ... $$ (it is rendered with KaTeX).
+Escape backslashes correctly for JSON. Never put Hebrew inside math; keep math LTR and self-contained.`;
 }
 
 /** Apply high-confidence repairs to the transcript (edits stay stored for review). */
