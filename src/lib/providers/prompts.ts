@@ -40,18 +40,35 @@ export function cleanHebrew(s: string): string {
   for (const [re, good] of FIX_RES) out = out.replace(re, (_m, pre: string) => pre + good);
   return out;
 }
-/** True when most letters are neither Hebrew nor Latin — a hallucination (seen: Armenian gibberish over a silent tail). */
+/** True for real gibberish only. Lectures are mixed Hebrew+English (code-switching inside one sentence is normal, short
+ *  English-only phrases are valid), so Hebrew and Latin letters (incl. accented Latin) are both "ok". Drops: segments whose
+ *  letters are mostly another script (seen: Armenian gibberish over a silent tail) and huge repetition loops. */
 export function isForeignScript(s: string): boolean {
   const letters = (s ?? "").match(/\p{L}/gu) ?? [];
   if (letters.length < 4) return false;
-  const ok = letters.filter((c) => /[\u05D0-\u05EAA-Za-z]/.test(c)).length;
+  const ok = letters.filter((c) => /[\p{Script=Hebrew}\p{Script=Latin}]/u.test(c)).length;
   return ok / letters.length < 0.5;
 }
-/** niqqud strip + deterministic Hebrew cleanup on every segment; drops foreign-script hallucinated segments. */
-export function cleanTranscript<T extends Transcript>(t: T): T {
-  return { ...t, segments: (t.segments ?? []).map((s) => ({ ...s, text: cleanHebrew(stripNiqqud(s.text)) })).filter((s) => !isForeignScript(s.text)) };
+/** A degenerate loop: >=40 words where one short n-gram (1-4 words) repeats back-to-back covering >=70% of the text. */
+export function isRepetitionLoop(s: string): boolean {
+  const w = (s ?? "").trim().split(/\s+/).filter(Boolean);
+  if (w.length < 40) return false;
+  for (let n = 1; n <= 4; n++) {
+    let best = 0, run = 0;
+    for (let i = n; i + n <= w.length; i += n) {
+      if (w.slice(i, i + n).join(" ") === w.slice(i - n, i).join(" ")) { run += n; best = Math.max(best, run + n); } else run = 0;
+    }
+    if (best / w.length >= 0.7) return true;
+  }
+  return false;
 }
-export const NO_NIQQUD = `NEVER emit niqqud, Hebrew vowel points or cantillation marks (Unicode U+0591–U+05C7). Write plain, unpointed Hebrew only (כתיב מלא).`;
+/** niqqud strip + deterministic Hebrew cleanup on every segment; keeps Hebrew, English and mixed He+En segments and drops
+ *  only gibberish (other scripts, repetition loops). */
+export function cleanTranscript<T extends Transcript>(t: T): T {
+  return { ...t, segments: (t.segments ?? []).map((s) => ({ ...s, text: cleanHebrew(stripNiqqud(s.text)) }))
+    .filter((s) => !isForeignScript(s.text) && !isRepetitionLoop(s.text)) };
+}
+export const NO_NIQQUD = `NEVER emit niqqud, Hebrew vowel points or cantillation marks (Unicode U+0591–U+05C7). Write Hebrew as plain, unpointed Hebrew (כתיב מלא); English words stay in Latin script.`;
 
 const fmt = (t: Transcript) => t.segments.map((s, i) => `#${i} [${s.start}-${s.end}s] ${s.text}`).join("\n");
 
@@ -81,9 +98,11 @@ ${ctx.courseExcerpts?.(text, pack) || "(none)"}`;
 
 /** Pass 1: terms + code-switching + Hebrew spelling. Segment indices are absolute (offset = first index in this chunk). */
 export function repairPrompt(t: Transcript, ctx: LectureContext, offset = 0) {
-  return `You fix ASR errors in a transcript of a Hebrew university lecture ("${ctx.title}"), Hebrew with English code-switching.
+  return `You fix ASR errors in a transcript of a university lecture ("${ctx.title}") in mixed Hebrew+English:
+speakers code-switch inside sentences, and English words/phrases (even whole short English sentences) are NORMAL and must stay English.
 Fix: (a) English technical terms transliterated into Hebrew letters ("דיפ לרנינג" → "deep learning") when the slides use English;
-(b) phonetically mangled terms, wrong acronyms, broken formula/compound names; (c) misspelled Hebrew words.
+(b) phonetically mangled terms, wrong acronyms, broken formula/compound names; (c) misspelled Hebrew words; (d) misspelled English words.
+Never translate English into Hebrew or Hebrew into English, and never "fix" a correctly spoken English word into Hebrew.
 ${ORTHO}
 ${NO_NIQQUD}
 ${RULES}
@@ -96,10 +115,11 @@ Return [] if nothing to fix.`;
 
 /** Pass 2 (light): Hebrew spelling only, run on the already-repaired text. */
 export function spellingPrompt(t: Transcript, ctx: LectureContext, offset = 0) {
-  return `Proofread ONLY the Hebrew spelling in this ASR transcript of a Hebrew lecture ("${ctx.title}").
+  return `Proofread ONLY the Hebrew spelling in this ASR transcript of a mixed Hebrew+English lecture ("${ctx.title}").
 Find Hebrew words written phonetically/incorrectly and give the correct spelling. Ignore style, grammar and punctuation.
 Be thorough: check EVERY Hebrew word, including short function words and prefixes (not only technical terms). Do not be shy —
 a clear misspelling of a common word should be fixed with confidence ≥0.7. Still never rephrase, reorder, drop or add words.
+Leave English (Latin-script) words and code-switched phrases as they are; do not translate or transliterate them.
 ${ORTHO}
 ${NO_NIQQUD}
 ${RULES}

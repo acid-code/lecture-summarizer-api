@@ -1,5 +1,6 @@
 import { GoogleGenAI, createPartFromUri, type Part } from "@google/genai";
 import { readFileUrl } from "../storage";
+import { clipper } from "./clip";
 import { applyRepairs, repairPrompt, spellingPrompt, summaryPrompt, NO_NIQQUD } from "./prompts";
 import type { AiProvider, Repair, LectureSummary, Transcript, WindowTranscript } from "./types";
 
@@ -150,21 +151,60 @@ export const geminiProvider: AiProvider = {
   name: "gemini",
   async transcribe(audio, ctx): Promise<WindowTranscript> {
     const ai = client();
-    const part = await uploadToGemini(ai, audio.url, audio.mime);
     const hints = (ctx.slidesText ?? "(none)").slice(0, 6000);
-    const ask = (ws?: number, we?: number) => json<WindowTranscript>([part,
-      `Transcribe this Hebrew university lecture audio ("${ctx.title}"). Speech mixes Hebrew with English technical terms: ` +
-        `write English terms in Latin script. ${NO_NIQQUD} Slide text for spelling hints:\n${hints}\n` +
+    const LANG = `Transcribe this university lecture audio ("${ctx.title}"). The speaker mixes Hebrew and English, often inside ` +
+      `the same sentence (Hebrew with English technical terms/phrases, sometimes whole English sentences): write Hebrew words in ` +
+      `Hebrew script and English words in Latin script exactly as spoken; never translate or transliterate either way. ` +
+      `${NO_NIQQUD} Slide text for spelling hints:\n${hints}\n`;
+    const TAIL = `Return JSON {"language":"he","segments":[{"start":seconds,"end":seconds,"text":string}]} with one segment per ` +
+      `sentence (~5-15s each). Transcribe every word verbatim (no summarizing, no skipping). start/end must be the real ` +
+      `moments the words are spoken, measured from the audio itself; do not space timestamps evenly. ` +
+      `If there is no speech, return {"language":"he","segments":[]}.`;
+    // Preferred path: cut each window with ffmpeg and send only that clip (timestamps clip-relative, offset by ws here).
+    // Fallback (no ffmpeg / ffmpeg error): whole file + "transcribe only MM:SS-MM:SS" prompt as before.
+    const windowed = audio.windowStart !== undefined && audio.windowEnd !== undefined;
+    let src: { data: Buffer; mime?: string } | undefined;
+    let clip: Awaited<ReturnType<typeof clipper>> | null = null;
+    if (windowed) {
+      try { src = await readFileUrl(audio.url); clip = await clipper(src.data); }
+      catch (e) { clip = null; console.warn(`ASR clip: ffmpeg unavailable, falling back to whole-file time-range prompt: ${(e as Error).message}`); }
+    }
+    let wholePart: Part | undefined;
+    const whole = async () => (wholePart ??= await uploadToGemini(ai, audio.url, audio.mime));
+    const askClip = async (ws: number, we: number): Promise<WindowTranscript | null> => {
+      if (!clip) return null;
+      let bytes: Buffer | null;
+      try { bytes = await clip.cut(ws, we); }
+      catch (e) { console.warn(`ASR clip ${fmt(ws)}-${fmt(we)}: cut failed, falling back to whole-file prompt: ${(e as Error).message}`); return null; }
+      if (!bytes) return { language: "he", segments: [], audioEnded: true };
+      const part: Part = { inlineData: { mimeType: "audio/mp4", data: bytes.toString("base64") } };
+      const call = () => json<WindowTranscript>([part, LANG +
+        `This clip is ${Math.round(we - ws)}s long. Transcribe ALL speech in this clip from its very beginning to its end; ` +
+        `timestamps are seconds from the start of THIS clip (0 = clip start). ` +
+        (audio.prevText ? `The clip may begin mid-sentence; the previous part ended with: «${audio.prevText}». Do not repeat those words. ` : "") +
+        TAIL], transcriptSchema, { repair: false, maxOutputTokens: asrTokenCap(ws, we) });
+      let t: WindowTranscript;
+      try { t = await call(); } catch (e) {
+        // Salvage/repair here so clip-relative times get offset; otherwise let run() split the window.
+        if (!(e instanceof BadJsonError)) throw e;
+        const salvaged = salvageSegments(e.raw);
+        if (salvaged.length >= 2) { console.warn(`ASR clip: salvaged ${salvaged.length} segments from invalid JSON`); t = { language: "he", segments: salvaged }; }
+        else if (we - ws > MIN_SPLIT_SEC * 2) throw e;
+        else t = parse<WindowTranscript>(await rawJson([`The following JSON is invalid or truncated. Return ONLY corrected, complete, ` +
+          `valid JSON with the same structure (drop an incomplete last item).\n\n${e.raw}`], transcriptSchema));
+      }
+      const segs = (t.segments ?? []).map((s) => typeof s.start === "number" && typeof s.end === "number"
+        ? { ...s, start: Math.min(we, s.start + ws), end: Math.min(we, s.end + ws) } : s);
+      return { ...t, segments: segs, audioEnded: t.audioEnded };
+    };
+    const ask = async (ws?: number, we?: number) => (ws !== undefined && we !== undefined ? await askClip(ws, we) : null) ??
+      json<WindowTranscript>([await whole(), LANG +
         (ws !== undefined && we !== undefined
           ? `ONLY transcribe the part of the audio from ${fmt(ws)} to ${fmt(we)} (${ws}s-${we}s). Timestamps must be absolute ` +
             `seconds from the start of the file. If the audio ends before ${fmt(ws)}, return {"language":"he","segments":[],"audioEnded":true}. `+
             (audio.prevText ? `Everything before ${fmt(ws)} is ALREADY transcribed; it ended with: «${audio.prevText}». Do NOT transcribe ` +
               `those words again: start with the speech that follows them, at or after ${fmt(ws)}. ` : "")
-          : "") +
-        `Return JSON {"language":"he","segments":[{"start":seconds,"end":seconds,"text":string}]} with one segment per ` +
-        `sentence (~5-15s each). Transcribe every word verbatim (no summarizing, no skipping). start/end must be the real ` +
-        `moments the words are spoken, measured from the audio itself; do not space timestamps evenly. ` +
-        `If there is no speech, return {"language":"he","segments":[]}.`,
+          : "") + TAIL,
     ], transcriptSchema, { repair: false, maxOutputTokens: asrTokenCap(ws, we) });
 
     // On persistent bad JSON: split the window in half and merge; at the minimum size try the repair path.
@@ -230,7 +270,9 @@ export const geminiProvider: AiProvider = {
       }
       return { t, segs };
     };
-    const { t, segs: raw } = await runChecked(audio.windowStart, audio.windowEnd);
+    let res: Awaited<ReturnType<typeof runChecked>>;
+    try { res = await runChecked(audio.windowStart, audio.windowEnd); } finally { await clip?.dispose(); }
+    const { t, segs: raw } = res;
     const segs = raw.sort((a, b) => a.start - b.start);
     // Shift into lecture time (multi-segment uploads).
     return { language: t.language || "he", audioEnded: t.audioEnded, segments: segs.map((s) => ({ ...s, start: s.start + audio.offsetSec, end: s.end + audio.offsetSec })) };
