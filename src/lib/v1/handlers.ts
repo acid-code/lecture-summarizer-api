@@ -9,7 +9,7 @@ import { db, ensureDb, schema } from "@/db";
 import { pdfToText } from "../context";
 import { isPptx, pptxToText } from "../pptx";
 import { bad, id, notFound } from "../http";
-import { advanceJob, progressOf, resummarizeJob, retryJob, type Artifacts } from "../pipeline";
+import { advanceJob, progressOf, reprocessJob, resummarizeJob, retryJob, type Artifacts } from "../pipeline";
 import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
 import { blobAccess, isAcceptableUploadUrl, readFileUrl, saveFile } from "../storage";
 
@@ -306,6 +306,17 @@ export async function postResummarize(req: Request, jid: string) {
   if (!r.ok && r.reason === "not_found") return notFound();
   if (!r.ok) return j({ ...jobView(r.job!), error: "needs a done/failed job with complete ASR (use ?force=1 for a running job)" }, 409);
   return j(jobView(r.job), 202);
+}
+
+/** POST /v1/jobs/{id}/reprocess[?fallback=1&force=1] — full redo from ASR when server audio exists; else 409 audio_missing
+ *  (or, with fallback=1, re-summarize from the existing transcript). Response adds mode + audio_missing. */
+export async function postReprocess(req: Request, jid: string) {
+  const q = new URL(req.url).searchParams;
+  const r = await reprocessJob(jid, q.get("fallback") === "1", q.get("force") === "1");
+  if (!r.ok && r.reason === "not_found") return notFound();
+  if (!r.ok) return j({ ...(r.job ? jobView(r.job) : {}), audio_missing: !!r.audioMissing,
+    error: r.audioMissing ? "raw audio is no longer on the server; re-upload audio or use fallback=1" : "only done, failed or stuck jobs can be reprocessed (use ?force=1)" }, 409);
+  return j({ ...jobView(r.job), mode: r.mode, audio_missing: !!r.audioMissing }, 202);
 }
 
 async function latestDone(lid: string) {

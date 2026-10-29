@@ -17,7 +17,7 @@ export interface Artifacts {
 const ASR_WINDOW_SEC = Number(process.env.ASR_WINDOW_SEC || 360);
 const ASR_MAX_WINDOWS = 60;
 
-async function audioInputs(lectureId: string, legacyUrl: string | null): Promise<AudioInput[]> {
+export async function audioInputs(lectureId: string, legacyUrl: string | null): Promise<AudioInput[]> {
   const segs = await db.select().from(schema.segments).where(eq(schema.segments.lectureId, lectureId)).orderBy(asc(schema.segments.seq));
   let off = 0;
   const out: AudioInput[] = [];
@@ -63,6 +63,30 @@ export async function resummarizeJob(jobId: string, force = false): Promise<Retr
   const [row] = await db.update(schema.jobs).set({ stage, error: null, artifacts: JSON.stringify(a), updatedAt: Date.now() })
     .where(eq(schema.jobs.id, jobId)).returning();
   return { ok: true, job: row };
+}
+
+/**
+ * Full redo: if the lecture's raw audio is still on the server, wipe all stage outputs and restart from ASR.
+ * Without audio: with fallback=true (and a complete ASR) behaves like resummarize; else not_retryable/audio_missing.
+ */
+export async function reprocessJob(jobId: string, fallback: boolean, force = false): Promise<RetryResult & { mode?: "full" | "resummarize"; audioMissing?: boolean }> {
+  await ensureDb();
+  const job = await db.query.jobs.findFirst({ where: eq(schema.jobs.id, jobId) });
+  if (!job) return { ok: false, reason: "not_found" };
+  const stuck = Date.now() - job.updatedAt > STUCK_MS;
+  if (job.stage !== "done" && job.stage !== "failed" && !stuck && !force) return { ok: false, reason: "not_retryable", job };
+  const lecture = await db.query.lectures.findFirst({ where: eq(schema.lectures.id, job.lectureId) });
+  const inputs = lecture ? await audioInputs(lecture.id, lecture.audioUrl) : [];
+  if (inputs.length || getProvider().name === "mock") {
+    const old = JSON.parse(job.artifacts) as Artifacts & { options?: unknown };
+    const a = { options: old.options ?? {} };
+    const [row] = await db.update(schema.jobs).set({ stage: "asr", error: null, artifacts: JSON.stringify(a), updatedAt: Date.now() })
+      .where(eq(schema.jobs.id, jobId)).returning();
+    return { ok: true, job: row, mode: "full" };
+  }
+  if (!fallback) return { ok: false, reason: "not_retryable", job, audioMissing: true };
+  const r = await resummarizeJob(jobId, true);
+  return r.ok ? { ...r, mode: "resummarize", audioMissing: true } : { ...r, audioMissing: true };
 }
 
 /** A non-terminal job not updated for this long is considered stuck (crashed/timed-out invocation). */
