@@ -1,7 +1,7 @@
 import { GoogleGenAI, createPartFromUri, type Part } from "@google/genai";
 import { readFileUrl } from "../storage";
-import { repairPrompt, summaryPrompt } from "./prompts";
-import type { AiProvider, Repair, LectureSummary, WindowTranscript } from "./types";
+import { applyRepairs, repairPrompt, spellingPrompt, summaryPrompt } from "./prompts";
+import type { AiProvider, Repair, LectureSummary, Transcript, WindowTranscript } from "./types";
 
 /**
  * Model ladder, highest free-tier daily quota first (AI Studio free project, Oct 2026):
@@ -209,8 +209,22 @@ export const geminiProvider: AiProvider = {
   },
   async repairTerms(t, ctx): Promise<Repair[]> {
     if (!t.segments.length) return [];
-    const r = await json<Repair[]>([repairPrompt(t, ctx)]);
-    return Array.isArray(r) ? r : [];
+    // Chunk long transcripts so each call sees a manageable slice (indices stay absolute).
+    const size = Number(process.env.REPAIR_CHUNK_SEGMENTS || 120);
+    const run = async (mk: typeof repairPrompt, tr: Transcript) => {
+      const out: Repair[] = [];
+      for (let o = 0; o < tr.segments.length; o += size) {
+        const part = { ...tr, segments: tr.segments.slice(o, o + size) };
+        try { const r = await json<Repair[]>([mk(part, ctx, o)]); if (Array.isArray(r)) out.push(...r); }
+        catch (e) { if (o === 0 && mk === repairPrompt) throw e; console.warn(`repair chunk ${o} skipped: ${(e as Error).message}`); }
+      }
+      return out;
+    };
+    const first = await run(repairPrompt, t);
+    if (process.env.REPAIR_SPELLING_PASS === "0") return first;
+    // Light second pass focused only on Hebrew spelling, over the text after pass-1 fixes.
+    const second = await run(spellingPrompt, applyRepairs(t, first)).catch(() => [] as Repair[]);
+    return [...first, ...second.map((r) => ({ ...r, evidence: r.evidence || "spelling" }))];
   },
   async summarize(t, repairs, ctx): Promise<LectureSummary> {
     return json<LectureSummary>([summaryPrompt(t, repairs, ctx)]);

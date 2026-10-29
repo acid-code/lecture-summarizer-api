@@ -2,21 +2,51 @@ import type { LectureContext, Repair, Transcript } from "./types";
 
 const fmt = (t: Transcript) => t.segments.map((s, i) => `#${i} [${s.start}-${s.end}s] ${s.text}`).join("\n");
 
-export function repairPrompt(t: Transcript, ctx: LectureContext) {
+const ORTHO = `HEBREW ORTHOGRAPHY — the ASR often writes Hebrew words by sound, so fix misspelled Hebrew words to their correct
+dictionary/scientific spelling. Common confusions: כ/ח/ק (ריקוזים→ריכוזים, קימיה→כימיה), ב/ו, ט/ת, ס/ש/צ (שׂ), א/ע/ה,
+כ/כּ vs ק at word start, missing/extra matres lectionis (י/ו), final letters (ך ם ן ף ץ), split/merged words and prefixes (ה,ו,ב,כ,ל,מ,ש).
+Domain terms (biology, chemistry, biochemistry, physics, math, engineering, CS) must use the standard academic Hebrew
+spelling or the English term exactly as on the slides/course pack (enzyme names, units, reagents, acronyms like ELISA, pH, mM).`;
+
+const RULES = `RULES: Prefer terms that appear in the slides first, then the course pack, then standard academic usage.
+Correct only spelling/term errors of words that were clearly SAID — never rephrase, translate, summarize, reorder or add content,
+never fix grammar or spoken style, never touch timestamps or segment boundaries. "span" must be an EXACT substring of that
+segment's text (copy it character-for-character, keep it short: the misspelled word with minimal context), "replacement" is
+the same span with only the fix applied. If unsure, skip it or give low confidence.`;
+
+const ctxBlock = (t: Transcript, ctx: LectureContext, slides = 8000, pack = 5000) => {
   const text = t.segments.map((s) => s.text).join(" ");
-  return `You fix Hebrew/English code-switching errors in an ASR transcript of a Hebrew university lecture ("${ctx.title}").
-Typical errors: English technical terms transliterated into Hebrew letters ("דיפ לרנינג" → "deep learning"),
-phonetically mangled terms, wrong acronyms, broken formula names. Do NOT rephrase, translate or fix grammar.
-Only propose edits supported by evidence from the slides, the course pack, or very strong domain knowledge.
-Primary evidence — lecture slides:
-${(ctx.slidesText ?? "(none)").slice(0, 8000)}
+  return `Primary evidence — lecture slides (glossary of correct spellings):
+${(ctx.slidesText ?? "(none)").slice(0, slides)}
 Secondary evidence — course pack excerpts:
-${ctx.courseExcerpts?.(text, 5000) || "(none)"}
+${ctx.courseExcerpts?.(text, pack) || "(none)"}`;
+};
+
+/** Pass 1: terms + code-switching + Hebrew spelling. Segment indices are absolute (offset = first index in this chunk). */
+export function repairPrompt(t: Transcript, ctx: LectureContext, offset = 0) {
+  return `You fix ASR errors in a transcript of a Hebrew university lecture ("${ctx.title}"), Hebrew with English code-switching.
+Fix: (a) English technical terms transliterated into Hebrew letters ("דיפ לרנינג" → "deep learning") when the slides use English;
+(b) phonetically mangled terms, wrong acronyms, broken formula/compound names; (c) misspelled Hebrew words.
+${ORTHO}
+${RULES}
+${ctxBlock(t, ctx)}
 Transcript (segment index, times, text):
-${fmt(t)}
-Return JSON array: [{"segment":index,"span":"exact substring in that segment","replacement":"fixed text","evidence":"slide N / course-pack p.N / domain","confidence":0..1}].
+${t.segments.map((s, i) => `#${i + offset} [${s.start}-${s.end}s] ${s.text}`).join("\n")}
+Return JSON array: [{"segment":index,"span":"exact substring in that segment","replacement":"fixed text","evidence":"slide N / course-pack / spelling / domain","confidence":0..1}].
 Return [] if nothing to fix.`;
-  // TODO: phonetic matching (Hebrew-transliteration ↔ English term list) as a cheap pre-pass before the LLM.
+}
+
+/** Pass 2 (light): Hebrew spelling only, run on the already-repaired text. */
+export function spellingPrompt(t: Transcript, ctx: LectureContext, offset = 0) {
+  return `Proofread ONLY the Hebrew spelling in this ASR transcript of a Hebrew lecture ("${ctx.title}").
+Find Hebrew words written phonetically/incorrectly and give the correct spelling. Ignore style, grammar and punctuation.
+${ORTHO}
+${RULES}
+${ctxBlock(t, ctx, 5000, 2500)}
+Transcript (segment index, text):
+${t.segments.map((s, i) => `#${i + offset} ${s.text}`).join("\n")}
+Return JSON array: [{"segment":index,"span":"exact misspelled substring","replacement":"corrected","evidence":"spelling / slide N","confidence":0..1}].
+Return [] if everything is spelled correctly.`;
 }
 
 const mmss = (sec: number) => { const t = Math.max(0, Math.floor(sec)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };

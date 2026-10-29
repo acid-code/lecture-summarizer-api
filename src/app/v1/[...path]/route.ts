@@ -55,6 +55,7 @@ async function route(req: Request, { params }: Ctx) {
       if (c === "advance" && m === "POST") return h.postAdvance(b);
       if (c === "retry" && m === "POST") return h.postRetry(req, b);
       if (c === "reprocess" && m === "POST") return h.postReprocess(req, b);
+      if (c === "rerepair" && m === "POST") return h.postRerepair(req, b);
       if (c === "resummarize" && m === "POST") return h.postResummarize(req, b);
     }
   } catch (e) {

@@ -153,3 +153,7 @@ Summary text may contain LaTeX: `\( … \)` / `$…$` inline, `$$ … $$` / `\[ 
 prints it into the PDF on Vercel too. Bad TeX shows as red source, never fails the job. Single `$` follows pandoc rules
 (`$5 and $10` stays text). The summary prompt asks Gemini to emit formulas as LaTeX. Regenerate the CSS after a KaTeX upgrade
 (see commit message one-liner in git log). Typst is not used in the Vercel path (native binary).
+
+### Re-repair (no ASR quota)
+`POST /v1/jobs/{id}/rerepair[?force=1]` keeps the ASR and re-runs repair (term fixes + a second Hebrew-spelling pass) → summary → PDF.
+`reprocess?fallback=1` without server audio now does the same. Env: `REPAIR_SPELLING_PASS=0` disables pass 2, `REPAIR_CHUNK_SEGMENTS` (default 120).

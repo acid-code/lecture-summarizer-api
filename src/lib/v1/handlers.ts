@@ -9,7 +9,7 @@ import { db, ensureDb, schema } from "@/db";
 import { pdfToText } from "../context";
 import { isPptx, pptxToText } from "../pptx";
 import { bad, id, notFound } from "../http";
-import { advanceJob, progressOf, reprocessJob, resummarizeJob, retryJob, type Artifacts } from "../pipeline";
+import { advanceJob, progressOf, reprocessJob, rerepairJob, resummarizeJob, retryJob, type Artifacts } from "../pipeline";
 import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
 import { blobAccess, isAcceptableUploadUrl, readFileUrl, saveFile } from "../storage";
 
@@ -303,6 +303,14 @@ export async function getTranscript(lid: string) {
 /** POST /v1/jobs/{id}/resummarize[?force=1] — clear summary/pdf, keep ASR+repair, re-run from summary. */
 export async function postResummarize(req: Request, jid: string) {
   const r = await resummarizeJob(jid, new URL(req.url).searchParams.get("force") === "1");
+  if (!r.ok && r.reason === "not_found") return notFound();
+  if (!r.ok) return j({ ...jobView(r.job!), error: "needs a done/failed job with complete ASR (use ?force=1 for a running job)" }, 409);
+  return j(jobView(r.job), 202);
+}
+
+/** POST /v1/jobs/{id}/rerepair[?force=1] — keep ASR, re-run repair (terms + Hebrew spelling) + summary + pdf. */
+export async function postRerepair(req: Request, jid: string) {
+  const r = await rerepairJob(jid, new URL(req.url).searchParams.get("force") === "1");
   if (!r.ok && r.reason === "not_found") return notFound();
   if (!r.ok) return j({ ...jobView(r.job!), error: "needs a done/failed job with complete ASR (use ?force=1 for a running job)" }, 409);
   return j(jobView(r.job), 202);

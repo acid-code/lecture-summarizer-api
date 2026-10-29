@@ -66,6 +66,23 @@ export async function resummarizeJob(jobId: string, force = false): Promise<Retr
 }
 
 /**
+ * Re-run repair+summary+pdf from the existing ASR (no ASR quota spent) — picks up improved repair/spelling prompts.
+ */
+export async function rerepairJob(jobId: string, force = false): Promise<RetryResult> {
+  await ensureDb();
+  const job = await db.query.jobs.findFirst({ where: eq(schema.jobs.id, jobId) });
+  if (!job) return { ok: false, reason: "not_found" };
+  const a = JSON.parse(job.artifacts) as Artifacts;
+  const stuck = Date.now() - job.updatedAt > STUCK_MS;
+  if (!a.asrComplete || (job.stage !== "done" && job.stage !== "failed" && !stuck && !force)) return { ok: false, reason: "not_retryable", job };
+  delete a.repair; delete a.repaired; delete a.summary; delete a.html; delete a.pdf;
+  const stage = resumeStage(a);
+  const [row] = await db.update(schema.jobs).set({ stage, error: null, artifacts: JSON.stringify(a), updatedAt: Date.now() })
+    .where(eq(schema.jobs.id, jobId)).returning();
+  return { ok: true, job: row };
+}
+
+/**
  * Full redo: if the lecture's raw audio is still on the server, wipe all stage outputs and restart from ASR.
  * Without audio: with fallback=true (and a complete ASR) behaves like resummarize; else not_retryable/audio_missing.
  */
@@ -84,8 +101,9 @@ export async function reprocessJob(jobId: string, fallback: boolean, force = fal
       .where(eq(schema.jobs.id, jobId)).returning();
     return { ok: true, job: row, mode: "full" };
   }
+  // Fallback re-runs repair (terms + Hebrew spelling) + summary from the existing ASR; mode stays "resummarize" for clients.
   if (!fallback) return { ok: false, reason: "not_retryable", job, audioMissing: true };
-  const r = await resummarizeJob(jobId, true);
+  const r = await rerepairJob(jobId, true);
   return r.ok ? { ...r, mode: "resummarize", audioMissing: true } : { ...r, audioMissing: true };
 }
 
