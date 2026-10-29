@@ -9,7 +9,7 @@ import { db, ensureDb, schema } from "@/db";
 import { pdfToText } from "../context";
 import { isPptx, pptxToText } from "../pptx";
 import { bad, id, notFound } from "../http";
-import { advanceJob, progressOf, reprocessJob, rerepairJob, resummarizeJob, retryJob, type Artifacts } from "../pipeline";
+import { advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, retryJob, type Artifacts } from "../pipeline";
 import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
 import { blobAccess, isAcceptableUploadUrl, readFileUrl, saveFile } from "../storage";
 
@@ -250,7 +250,10 @@ function jobView(job: typeof schema.jobs.$inferSelect) {
   const state = job.stage === "done" ? "done" : job.stage === "failed" ? "failed" : job.stage === "queued" ? "queued" : "running";
   return { job_id: job.id, lecture_id: job.lectureId, state, stage: job.stage, progress: progressOf(job.stage), error: job.error,
     pdf_ready: !!a.pdf, transcript_ready: !!(a.repaired ?? a.asr)?.segments?.length, transcript_thin: a.summary?.transcript_thin ?? null,
-    updated_at: new Date(job.updatedAt).toISOString(), repairs: a.repair ?? null };
+    updated_at: new Date(job.updatedAt).toISOString(), repairs: a.repair ?? null,
+    progress_detail: job.stage === "failed" || job.stage === "done" || a.progressDetail?.stage !== job.stage
+      ? { stage: job.stage, label: job.stage === "asr" ? `ASR part ${(a.asrParts ?? 0) + 1}` : stageLabel(job.stage) }
+      : a.progressDetail };
 }
 
 /**

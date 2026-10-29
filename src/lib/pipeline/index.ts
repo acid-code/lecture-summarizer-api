@@ -11,7 +11,17 @@ import { renderStudyHtml } from "./render";
 export interface Artifacts {
   asr?: Transcript; asrParts?: number; /** next ASR window start (s) inside the current part */ asrWindowStart?: number; asrComplete?: boolean; repair?: Repair[]; repaired?: Transcript;
   summary?: LectureSummary; html?: string; pdf?: string; audioDeleted?: boolean;
+  /** Detail about the next/current unit of work, for client progress text. */
+  progressDetail?: ProgressDetail;
 }
+
+export interface ProgressDetail {
+  stage: string; label: string; part?: number; parts?: number; window?: number; windows?: number | null;
+}
+
+const STAGE_LABEL: Record<string, string> = { queued: "Queued", asr: "Transcribing", repair: "Fixing terms", summary: "Summarizing", pdf: "Building PDF", done: "Done", failed: "Failed" };
+export function stageLabel(s: string) { return STAGE_LABEL[s] ?? s; }
+
 
 /** ASR window length (s): long audio is transcribed in windows so Gemini's JSON output is not truncated. */
 const ASR_WINDOW_SEC = Number(process.env.ASR_WINDOW_SEC || 360);
@@ -170,7 +180,16 @@ export async function advanceJob(jobId: string) {
         a.asr = { language: t.language, segments: [...(a.asr?.segments ?? []), ...t.segments] };
         const partDone = !windowed || (known ? we! >= cur.durationSec! : (t.audioEnded || !t.segments.length || ws / ASR_WINDOW_SEC >= ASR_MAX_WINDOWS - 1));
         if (partDone) { a.asrParts = done + 1; a.asrWindowStart = 0; } else a.asrWindowStart = we;
-        if ((a.asrParts ?? 0) < list.length) next = "asr"; else a.asrComplete = true;
+        if ((a.asrParts ?? 0) < list.length) {
+          next = "asr";
+          const np = list[a.asrParts ?? 0]; const nws = a.asrWindowStart ?? 0;
+          const nk = np.durationSec && np.durationSec > 0;
+          const nwin = ai.name !== "mock" && (!nk || np.durationSec! > ASR_WINDOW_SEC * 1.25);
+          const windows = !nwin ? 1 : nk ? Math.ceil(np.durationSec! / ASR_WINDOW_SEC) : null;
+          const part = (a.asrParts ?? 0) + 1, window = Math.floor(nws / ASR_WINDOW_SEC) + 1;
+          a.progressDetail = { stage: "asr", part, parts: list.length, window, windows,
+            label: `ASR part ${part}/${list.length}` + (windows === 1 ? "" : ` · window ${window}/${windows ?? "?"}`) };
+        } else a.asrComplete = true;
         break;
       }
       case "repair":
@@ -194,6 +213,8 @@ export async function advanceJob(jobId: string) {
         break;
       }
     }
+    const ns = next ?? "done";
+    if (ns !== "asr" || current !== "asr") a.progressDetail = { stage: ns, label: stageLabel(ns) };
     const [row] = await db.update(schema.jobs)
       .set({ stage: next ?? "done", artifacts: JSON.stringify(a), error: null, updatedAt: Date.now() })
       .where(eq(schema.jobs.id, jobId)).returning();
