@@ -138,17 +138,79 @@ export async function uploadSlides(req: Request, lid: string) {
   return j({ ok: true, slides_text_chars: slidesText?.length ?? 0, files: all.length });
 }
 
-/** Course-context pack. Stored on the COURSE (shared by all its lectures). Both URL shapes accepted. */
+export const MAX_COURSE_FILES = 3;
+
+/** Rebuild courses.context_url/context_text from course_files (all files joined; each file's first page tagged). */
+async function syncCourseContext(courseId: string) {
+  const all = await db.select().from(schema.courseFiles).where(eq(schema.courseFiles.courseId, courseId)).orderBy(schema.courseFiles.createdAt);
+  const text = all.filter((f) => f.text).map((f) => (all.length > 1 ? `=== ${f.name} ===\n` : "") + f.text).join("\f") || null;
+  await db.update(schema.courses).set({ contextPdfUrl: all[0]?.url ?? null, contextText: text }).where(eq(schema.courses.id, courseId));
+  return all;
+}
+
+/** Move a legacy single context PDF into course_files (once). */
+async function migrateLegacyContext(c: typeof schema.courses.$inferSelect) {
+  const n = await db.select({ id: schema.courseFiles.id }).from(schema.courseFiles).where(eq(schema.courseFiles.courseId, c.id));
+  if (n.length || !c.contextPdfUrl) return;
+  await db.insert(schema.courseFiles).values({ id: id(), courseId: c.id, name: decodeURIComponent(c.contextPdfUrl.split("/").pop()!.split("?")[0]),
+    mime: "application/pdf", url: c.contextPdfUrl, text: c.contextText, createdAt: c.createdAt });
+}
+
+/**
+ * POST course context (course- or lecture-addressed). Course context = up to 3 PDFs/PPTX, all sent with every lecture.
+ * Default (old clients): REPLACES all context files with this one. ?mode=add adds (same name → replaced); 409 when 3 already.
+ */
 export async function uploadContext(req: Request, courseId: string) {
   const c = await db.query.courses.findFirst({ where: eq(schema.courses.id, courseId) }); if (!c) return notFound();
+  const add = new URL(req.url).searchParams.get("mode") === "add";
   const { fd, json } = await form(req);
-  let url: string, data: Buffer;
-  if (fd) { const f = await fileFrom(fd, "uploads", `${courseId}-context`); if (!f) return bad("file required"); ({ url, data } = f); }
-  else if (typeof json?.url === "string") { url = json.url; ({ data } = await readFileUrl(url)); }
-  else return bad("multipart file or JSON {url}");
-  const text = await pdfToText(data).catch((e) => { throw new Error(`context PDF unreadable: ${e.message}`); });
-  await db.update(schema.courses).set({ contextPdfUrl: url, contextText: text }).where(eq(schema.courses.id, courseId));
-  return j({ ok: true, course_id: courseId, pages: text.split("\f").length, chars: text.length });
+  let url: string, data: Buffer, mime = "", name = "";
+  if (fd) { const f = await fileFrom(fd, "uploads", `${courseId}-context`); if (!f) return bad("file required"); ({ url, data, mime } = f); name = f.name || "context.pdf"; }
+  else if (typeof json?.url === "string") {
+    url = json.url; ({ data, mime = "" } = await readFileUrl(url));
+    if (!mime && typeof json.mime === "string") mime = json.mime;
+    name = typeof json.name === "string" && json.name ? json.name : decodeURIComponent(url.split("/").pop()!.split("?")[0]);
+  }
+  else return bad("multipart file or JSON {url, name?, mime?}");
+  const pptx = isPptx(mime, url) || name.toLowerCase().endsWith(".pptx");
+  const text = pptx ? pptxToText(data) : await pdfToText(data).catch((e) => { throw new Error(`context PDF unreadable: ${e.message}`); });
+  if (add) {
+    await migrateLegacyContext(c);
+    await db.delete(schema.courseFiles).where(and(eq(schema.courseFiles.courseId, courseId), eq(schema.courseFiles.name, name)));
+    const n = await db.select({ id: schema.courseFiles.id }).from(schema.courseFiles).where(eq(schema.courseFiles.courseId, courseId));
+    if (n.length >= MAX_COURSE_FILES) return j({ error: `course already has ${MAX_COURSE_FILES} context files; remove one first` }, 409);
+  } else await db.delete(schema.courseFiles).where(eq(schema.courseFiles.courseId, courseId));
+  await db.insert(schema.courseFiles).values({ id: id(), courseId, name, mime: mime || (pptx ? "application/vnd.openxmlformats-officedocument.presentationml.presentation" : "application/pdf"),
+    url, text, size: data.length, createdAt: Date.now() });
+  const all = await syncCourseContext(courseId);
+  return j({ ok: true, course_id: courseId, pages: text.split("\f").length, chars: text.length, files: all.length, max_files: MAX_COURSE_FILES });
+}
+
+/** GET /v1/courses/{id}/files — course context files. */
+export async function listCourseFiles(courseId: string) {
+  const c = await db.query.courses.findFirst({ where: eq(schema.courses.id, courseId) }); if (!c) return notFound();
+  await migrateLegacyContext(c);
+  const rows = await db.select().from(schema.courseFiles).where(eq(schema.courseFiles.courseId, courseId)).orderBy(schema.courseFiles.createdAt);
+  return j({ max_files: MAX_COURSE_FILES, files: rows.map((f) => ({ file_id: f.id, name: f.name, mime: f.mime, size: f.size,
+    chars: f.text?.length ?? 0, url: `/v1/courses/${courseId}/files/${f.id}` })) });
+}
+
+export async function getCourseFile(courseId: string, fid: string) {
+  const f = await db.query.courseFiles.findFirst({ where: and(eq(schema.courseFiles.courseId, courseId), eq(schema.courseFiles.id, fid)) });
+  if (!f) return notFound();
+  const r = await readFileUrl(f.url);
+  return new Response(new Uint8Array(r.data), { headers: { "content-type": r.mime || f.mime,
+    "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(f.name)}` } });
+}
+
+/** DELETE /v1/courses/{id}/files/{fileId} (or /files?all=1 to clear). */
+export async function deleteCourseFile(courseId: string, fid: string | undefined) {
+  const c = await db.query.courses.findFirst({ where: eq(schema.courses.id, courseId) }); if (!c) return notFound();
+  await migrateLegacyContext(c);
+  if (fid) await db.delete(schema.courseFiles).where(and(eq(schema.courseFiles.courseId, courseId), eq(schema.courseFiles.id, fid)));
+  else await db.delete(schema.courseFiles).where(eq(schema.courseFiles.courseId, courseId));
+  const all = await syncCourseContext(courseId);
+  return j({ ok: true, files: all.length });
 }
 
 export async function uploadSegment(req: Request, lid: string) {

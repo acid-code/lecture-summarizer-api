@@ -21,6 +21,11 @@ async function route(req: Request, { params }: Ctx) {
   try {
     if (a === "courses" && !b) return m === "POST" ? h.createCourse(req) : h.listCourses();
     if (a === "courses" && b && c === "context" && m === "POST") return h.uploadContext(req, b);
+    if (a === "courses" && b && c === "files") {
+      if (m === "GET" && !d) return h.listCourseFiles(b);
+      if (m === "GET" && d) return h.getCourseFile(b, d);
+      if (m === "DELETE") return h.deleteCourseFile(b, d);
+    }
     if (a === "uploads" && !b && m === "POST") return h.createUpload(req);
     if (a === "lectures" && !b && m === "POST") return h.createLecture(req);
     if (a === "lectures" && b) {
@@ -29,6 +34,10 @@ async function route(req: Request, { params }: Ctx) {
       if (c === "context" && m === "POST") {
         const courseId = await h.lectureCourseId(b);
         return courseId ? h.uploadContext(req, courseId) : notFound();
+      }
+      if (c === "context" && m === "DELETE") {
+        const courseId = await h.lectureCourseId(b);
+        return courseId ? h.deleteCourseFile(courseId, undefined) : notFound();
       }
       if (c === "audio" && d === "segments" && m === "POST") return h.uploadSegment(req, b);
       if (c === "markers" && m === "POST") return h.uploadMarkers(req, b);
@@ -52,4 +61,4 @@ async function route(req: Request, { params }: Ctx) {
   }
   return notFound();
 }
-export { route as GET, route as POST };
+export { route as GET, route as POST, route as DELETE };

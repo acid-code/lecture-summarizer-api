@@ -53,6 +53,21 @@ export const lectureFiles = sqliteTable("lecture_files", {
   createdAt: integer("created_at").notNull(),
 });
 
+/**
+ * Course context materials: up to 3 PDFs/PPTX per course (added 2026-10). courses.context_pdf_url stays as the
+ * "first file" for old readers; courses.context_text is the concatenation of all files' text (pages split by \f).
+ */
+export const courseFiles = sqliteTable("course_files", {
+  id: text("id").primaryKey(),
+  courseId: text("course_id").notNull().references(() => courses.id),
+  name: text("name").notNull(),
+  mime: text("mime").notNull(),
+  url: text("url").notNull(),
+  text: text("text"),
+  size: integer("size"),
+  createdAt: integer("created_at").notNull(),
+});
+
 export const STAGES = ["queued", "asr", "repair", "summary", "pdf", "done"] as const;
 export type Stage = (typeof STAGES)[number];
 
