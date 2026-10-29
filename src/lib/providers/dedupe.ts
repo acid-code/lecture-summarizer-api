@@ -46,15 +46,6 @@ export function dedupeTranscript<T extends Transcript>(t: T): T & { dedupedCount
     if (nStrong >= 2 || idx.some((x) => strong(x) && words[x].length >= 10)) idx.forEach((x) => (dup[x] = true));
     i = j + 1;
   }
-  // A short, mostly-covered leftover next to a >60s hole is the tail of a run removed earlier
-  // (dedupe also runs on already-deduped stored transcripts, where the run itself is gone).
-  const kept = segs.map((_, i) => i).filter((i) => !dup[i]);
-  kept.forEach((i, x) => {
-    if (words[i].length > 8 || words[i].length < 3 || wcover[i] < 0.6) return;
-    const gapBefore = x > 0 ? segs[i].start - segs[kept[x - 1]].end : 0;
-    const gapAfter = x + 1 < kept.length ? segs[kept[x + 1]].start - segs[i].end : 0;
-    if (Math.max(gapBefore, gapAfter) > 60) dup[i] = true;
-  });
   if (process.env.DEDUPE_DEBUG) segs.forEach((s, i) => console.warn(i, s.start.toFixed(0), cover[i].toFixed(2), wcover[i].toFixed(2), dup[i] ? "DUP" : "", s.text.slice(0, 40)));
   const out = segs.filter((_, i) => !dup[i]);
   const removed = n - out.length;

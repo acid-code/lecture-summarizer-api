@@ -10,7 +10,7 @@ import { deleteFileUrl, saveArtifact } from "../storage";
 import { renderStudyHtml } from "./render";
 
 export interface Artifacts {
-  asr?: Transcript; asrParts?: number; /** next ASR window start (s) inside the current part */ asrWindowStart?: number; asrComplete?: boolean; repair?: Repair[]; repaired?: Transcript;
+  asr?: Transcript; /** ASR before dedupe (append-only), so later dedupe changes can be re-applied from it */ asrRaw?: Transcript; asrParts?: number; /** next ASR window start (s) inside the current part */ asrWindowStart?: number; asrComplete?: boolean; repair?: Repair[]; repaired?: Transcript;
   summary?: LectureSummary; html?: string; pdf?: string; audioDeleted?: boolean;
   /** Detail about the next/current unit of work, for client progress text. */
   progressDetail?: ProgressDetail;
@@ -180,7 +180,8 @@ export async function advanceJob(jobId: string) {
         const prevText = ws > 0 ? a.asr?.segments.slice(-2).map((s) => s.text).join(" ").slice(-300) : undefined;
         const t = await ai.transcribe(windowed ? { ...cur, windowStart: ws, windowEnd: we, prevText } : cur, ctx);
         // Dedupe across windows: Gemini may re-transcribe earlier speech with later timestamps.
-        a.asr = dedupeTranscript({ language: t.language, segments: [...(a.asr?.segments ?? []), ...cleanTranscript(t).segments] });
+        a.asrRaw = { language: t.language, segments: [...(a.asrRaw?.segments ?? a.asr?.segments ?? []), ...cleanTranscript(t).segments] };
+        a.asr = dedupeTranscript(a.asrRaw);
         delete (a.asr as { dedupedCount?: number }).dedupedCount;
         const partDone = !windowed || (known ? we! >= cur.durationSec! : (t.audioEnded || !t.segments.length || ws / ASR_WINDOW_SEC >= ASR_MAX_WINDOWS - 1));
         if (partDone) { a.asrParts = done + 1; a.asrWindowStart = 0; } else a.asrWindowStart = we;
@@ -197,7 +198,7 @@ export async function advanceJob(jobId: string) {
         break;
       }
       case "repair":
-        a.asr = dedupeTranscript(cleanTranscript(a.asr!)); // also cleans/dedupes ASR stored before these fixes existed
+        a.asr = dedupeTranscript(cleanTranscript(a.asrRaw ?? a.asr!)); // also cleans/dedupes ASR stored before these fixes existed
         delete (a.asr as { dedupedCount?: number }).dedupedCount;
         a.repair = await ai.repairTerms(a.asr, ctx);
         a.repaired = applyRepairs(a.asr!, a.repair);
