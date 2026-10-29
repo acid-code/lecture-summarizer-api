@@ -160,6 +160,13 @@ MATH: write every formula/equation/symbolic expression as LaTeX — inline \\( .
 Escape backslashes correctly for JSON. Never put Hebrew inside math; keep math LTR and self-contained.`;
 }
 
+/** Slide text for the summary prompt: head of the deck plus the closing slides in full (end-of-deck summaries matter). */
+export function slidesForSummary(slides?: string | null, head = 10000, tail = 5000): string {
+  if (!slides) return "(none)";
+  if (slides.length <= head + tail) return slides + `\n(FINAL SLIDES = the last slides above.)`;
+  return slides.slice(0, head) + `\n…(middle slides omitted)…\nFINAL SLIDES (end of deck, closing summary):\n` + slides.slice(-tail);
+}
+
 export function summaryPrompt(t: Transcript, repairs: Repair[], ctx: LectureContext) {
   if (ctx.slidesOnly) return slidesOnlyPrompt(ctx);
   const text = t.segments.map((s) => s.text).join(" ");
@@ -172,6 +179,12 @@ SOURCE PRIORITY (strict) — the VOICE/transcript leads, slides only support it:
 2. SUPPORTING = slides. Use them only to clarify terms/spelling, formulas, definitions, structure and diagrams for what was said.
    Do NOT reorganize the summary by slide order and do NOT give slide-only bullets equal weight: slide material that was not
    discussed goes in briefly (one short bullet, or the glossary), never as the backbone of a section.
+2b. IMPORTANT SLIDE CONTENT must not be lost even though slides are secondary: harvest the slides' key definitions and key
+   points into the matching spoken sections (cite [slide N], or [t=…, slide N] when also spoken), and ALWAYS add one final
+   section titled "סיכום מהמצגת" (from the slides) built from the deck's CLOSING / summary / conclusion / take-home slides
+   (usually the last few slides, shown in full below under "FINAL SLIDES") — include their points even if they were only
+   lightly spoken or not spoken at all, each cited [slide N] (+ [t=…] when spoken). Keep it concise (about 3-8 bullets);
+   do not turn the whole slide outline into sections.
 3. BACKGROUND = course-pack excerpts — terminology/definitions only; never add topics not covered in this lecture.
 CITATIONS (mixed, required):
 - Spoken content MUST be cited with lecture time from the transcript, e.g. [t=4:35] (or a range [t=4:35-6:10]).
@@ -185,7 +198,7 @@ PRIMARY SOURCE — transcript (lecture time M:SS):
 ${fmtTimed(t) || "(empty)"}
 Term repairs already applied: ${JSON.stringify(repairs)}
 SUPPORTING CONTEXT — slides (glossary/structure/diagrams only; not the outline of the summary):
-${(ctx.slidesText ?? "(none)").slice(0, 12000)}
+${slidesForSummary(ctx.slidesText)}
 Course-pack excerpts: ${ctx.courseExcerpts?.(text, 6000) || "(none)"}
 Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}]}.
 Put cites inline at the end of bullets and in each section's "citation".
