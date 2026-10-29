@@ -10,6 +10,15 @@ export interface LectureSummary {
   glossary: { term: string; explanation: string }[];
   /** True when the transcript was empty/very short vs slides (summary leans on slides). */
   transcript_thin?: boolean;
+  /** Optional end-of-PDF "big picture" in English: main themes + what the lecture was trying to teach. Supplements, never replaces. */
+  big_picture?: BigPicture | null;
+}
+export interface BigPicture {
+  /** 2-4 sentences: what the lecturer was trying to teach and why the examples were chosen. */
+  intent: string;
+  themes: { title: string; explanation: string }[];
+  /** Key terms used in the lecture (e.g. "literal") that the main summary did not explain. */
+  missed_terms?: { term: string; explanation: string }[];
 }
 export interface AudioInput {
   url: string; mime: string; offsetSec: number; durationSec?: number;

@@ -70,3 +70,13 @@ test("glossary term goes through math", () => {
   const h = rsh({ title: "t", overview: "", sections: [], glossary: [{ term: "$H_{OR}$", explanation: "מחלקה" }] } as any);
   assert.match(h, /<dt><bdi class="math"/);
 });
+
+test("big picture appendix renders LTR after glossary with math", async () => {
+  const { renderStudyHtml } = await import("../src/lib/pipeline/render");
+  const h = renderStudyHtml({ title: "t", overview: "o", sections: [], glossary: [{ term: "a", explanation: "b" }],
+    big_picture: { intent: "Teach SAT encodings.", themes: [{ title: "Literals", explanation: "A literal is \\(x\\) or \\(\\neg x\\)." }],
+      missed_terms: [{ term: "literal", explanation: "a variable or its negation" }] } });
+  assert.ok(h.indexOf("Big picture") > h.indexOf("מילון מונחים"));
+  assert.ok(h.includes('dir="ltr"') && h.includes('class="katex"') && h.includes("Terms used in the lecture"));
+  assert.ok(!renderStudyHtml({ title: "t", overview: "o", sections: [], glossary: [], big_picture: null }).includes("Big picture"));
+});

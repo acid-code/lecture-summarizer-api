@@ -133,6 +133,20 @@ Return [] if everything is spelled correctly.`;
 const mmss = (sec: number) => { const t = Math.max(0, Math.floor(sec)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
 const fmtTimed = (t: Transcript) => t.segments.map((s) => `[t=${mmss(s.start)}-${mmss(s.end)}] ${s.text}`).join("\n");
 
+/** Optional end-of-PDF overview ("big picture"), appended AFTER the main summary; written in English. */
+export const BIG_PICTURE = `BIG PICTURE (optional "big_picture" field, written in clear ENGLISH; it is printed at the very END of the PDF,
+after the summary and glossary — it supplements the summary and never replaces or reorders it):
+- "intent": 2-4 sentences on what this lecture was trying to TEACH — the underlying idea the examples were meant to illustrate,
+  and how this lecture fits the course (use course-pack excerpts only for that framing).
+- "themes": 2-5 main themes/concepts, ordered from the most basic/"easier" idea to the hardest. Each "explanation" (3-6
+  sentences) explains the concept itself in plain language, says WHY it matters, and ties it to the lecture's concrete examples
+  (cite [t=…] / [slide N] when possible). Make implicit steps explicit — do not jump straight to the final result.
+- "missed_terms": technical terms that were USED in the transcript or slides (e.g. "literal", or any term the lecturer
+  mentioned in passing) but are not explained in the sections/glossary above — give a short precise definition with a cite.
+- Stay grounded: standard textbook background needed to understand THIS lecture's material is fine, but do not introduce
+  topics the lecture did not touch. If the lecture is too short/thin to say anything useful, set "big_picture": null.
+- Same MATH rules apply (KaTeX delimiters).`;
+
 /** Transcript is "thin" when it is empty/very short, or tiny compared to the slide text. */
 export function isTranscriptThin(t: Transcript | undefined, slidesText?: string | null): boolean {
   const chars = (t?.segments ?? []).reduce((n, s) => n + s.text.trim().length, 0);
@@ -155,7 +169,8 @@ per slide/page, slides separated by form-feeds or "=== file ===" headers). Slide
 Slides / materials:
 ${slides.slice(0, 60000) || "(none)"}
 Course-pack excerpts: ${ctx.courseExcerpts?.(slides.slice(0, 4000), 6000) || "(none)"}
-Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}]}.
+Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}],"big_picture":{"intent","themes":[{"title","explanation"}],"missed_terms":[{"term","explanation"}]}}.
+${BIG_PICTURE}
 MATH (rendered with KaTeX — undelimited TeX prints as garbage in the RTL PDF):
 - EVERY formula, equation, symbol or expression MUST be wrapped: inline \\( ... \\), display $$ ... $$. This includes single symbols (\\(\\varepsilon\\), \\(\\delta\\), \\(|H|\\)).
 - NEVER write a bare \\command (\\frac, \\varepsilon, \\ln, \\le ...) in prose outside delimiters. Never write HTML entities (&gt;, &lt;) — use > < or \\le \\ge inside math.
@@ -204,7 +219,8 @@ Term repairs already applied: ${JSON.stringify(repairs)}
 SUPPORTING CONTEXT — slides (glossary/structure/diagrams only; not the outline of the summary):
 ${slidesForSummary(ctx.slidesText)}
 Course-pack excerpts: ${ctx.courseExcerpts?.(text, 6000) || "(none)"}
-Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}]}.
+Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}],"big_picture":{"intent","themes":[{"title","explanation"}],"missed_terms":[{"term","explanation"}]}}.
+${BIG_PICTURE}
 Put cites inline at the end of bullets and in each section's "citation".
 MATH (rendered with KaTeX — undelimited TeX prints as garbage in the RTL PDF):
 - EVERY formula, equation, symbol or expression MUST be wrapped: inline \\( ... \\), display $$ ... $$. This includes single symbols (\\(\\varepsilon\\), \\(\\delta\\), \\(|H|\\)).
