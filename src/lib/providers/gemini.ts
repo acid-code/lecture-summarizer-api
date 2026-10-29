@@ -1,6 +1,6 @@
 import { GoogleGenAI, createPartFromUri, type Part } from "@google/genai";
 import { readFileUrl } from "../storage";
-import { applyRepairs, repairPrompt, spellingPrompt, summaryPrompt } from "./prompts";
+import { applyRepairs, repairPrompt, spellingPrompt, summaryPrompt, NO_NIQQUD } from "./prompts";
 import type { AiProvider, Repair, LectureSummary, Transcript, WindowTranscript } from "./types";
 
 /**
@@ -143,7 +143,7 @@ export const geminiProvider: AiProvider = {
     const hints = (ctx.slidesText ?? "(none)").slice(0, 6000);
     const ask = (ws?: number, we?: number) => json<WindowTranscript>([part,
       `Transcribe this Hebrew university lecture audio ("${ctx.title}"). Speech mixes Hebrew with English technical terms: ` +
-        `write English terms in Latin script. Slide text for spelling hints:\n${hints}\n` +
+        `write English terms in Latin script. ${NO_NIQQUD} Slide text for spelling hints:\n${hints}\n` +
         (ws !== undefined && we !== undefined
           ? `ONLY transcribe the part of the audio from ${fmt(ws)} to ${fmt(we)} (${ws}s-${we}s). Timestamps must be absolute ` +
             `seconds from the start of the file. If the audio ends before ${fmt(ws)}, return {"language":"he","segments":[],"audioEnded":true}. `

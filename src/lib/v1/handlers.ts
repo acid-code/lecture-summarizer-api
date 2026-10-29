@@ -12,6 +12,7 @@ import { bad, id, notFound } from "../http";
 import { advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, retryJob, type Artifacts } from "../pipeline";
 import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
 import { blobAccess, isAcceptableUploadUrl, readFileUrl, saveFile } from "../storage";
+import { stripNiqqud } from "../providers/prompts";
 
 const j = (b: unknown, status = 200) => Response.json(b, { status });
 
@@ -298,7 +299,7 @@ export async function getTranscript(lid: string) {
     const t = a.repaired ?? a.asr;
     if (!t?.segments?.length) continue;
     return j({ lecture_id: lid, job_id: job.id, source: a.repaired ? "repaired" : "asr", complete: !!a.asrComplete, language: t.language,
-      segments: t.segments.map((s) => ({ t0: s.start, t1: s.end, text: s.text })) });
+      segments: t.segments.map((s) => ({ t0: s.start, t1: s.end, text: stripNiqqud(s.text) })) });
   }
   return j({ error: "no transcript" }, 404);
 }

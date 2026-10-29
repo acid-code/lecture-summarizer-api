@@ -4,7 +4,7 @@ import { STAGES, type Stage } from "@/db/schema";
 import { retrieveExcerpts } from "../context";
 import { htmlToPdf } from "../pdf";
 import { getProvider, type AudioInput, type LectureContext, type Repair, type Transcript, type LectureSummary } from "../providers";
-import { applyRepairs, isTranscriptThin } from "../providers/prompts";
+import { applyRepairs, isTranscriptThin, stripTranscript } from "../providers/prompts";
 import { deleteFileUrl, saveArtifact } from "../storage";
 import { renderStudyHtml } from "./render";
 
@@ -177,7 +177,7 @@ export async function advanceJob(jobId: string) {
         const windowed = ai.name !== "mock" && (!known || cur.durationSec! > ASR_WINDOW_SEC * 1.25);
         const we = windowed ? (known ? Math.min(cur.durationSec!, ws + ASR_WINDOW_SEC) : ws + ASR_WINDOW_SEC) : undefined;
         const t = await ai.transcribe(windowed ? { ...cur, windowStart: ws, windowEnd: we } : cur, ctx);
-        a.asr = { language: t.language, segments: [...(a.asr?.segments ?? []), ...t.segments] };
+        a.asr = { language: t.language, segments: [...(a.asr?.segments ?? []), ...stripTranscript(t).segments] };
         const partDone = !windowed || (known ? we! >= cur.durationSec! : (t.audioEnded || !t.segments.length || ws / ASR_WINDOW_SEC >= ASR_MAX_WINDOWS - 1));
         if (partDone) { a.asrParts = done + 1; a.asrWindowStart = 0; } else a.asrWindowStart = we;
         if ((a.asrParts ?? 0) < list.length) {
@@ -193,7 +193,8 @@ export async function advanceJob(jobId: string) {
         break;
       }
       case "repair":
-        a.repair = await ai.repairTerms(a.asr!, ctx);
+        a.asr = stripTranscript(a.asr!); // also cleans ASR stored before niqqud stripping existed
+        a.repair = await ai.repairTerms(a.asr, ctx);
         a.repaired = applyRepairs(a.asr!, a.repair);
         break;
       case "summary":

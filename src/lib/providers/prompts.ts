@@ -1,5 +1,16 @@
 import type { LectureContext, Repair, Transcript } from "./types";
 
+/** Hebrew combining marks: cantillation (U+0591–05AF), niqqud points (U+05B0–05BD, 05BF, 05C1–05C2, 05C4–05C5, 05C7).
+ *  Punctuation in the block (maqaf U+05BE, paseq, sof pasuq, nun hafukha) is kept. */
+const HEBREW_MARKS = /[\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7]/g;
+export const stripNiqqud = (s: string) => (s ? s.replace(HEBREW_MARKS, "") : s);
+export const hasNiqqud = (s: string) => /[\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7]/.test(s ?? "");
+/** Deterministically remove Hebrew niqqud/cantillation from every segment text. */
+export function stripTranscript<T extends Transcript>(t: T): T {
+  return { ...t, segments: (t.segments ?? []).map((s) => ({ ...s, text: stripNiqqud(s.text) })) };
+}
+export const NO_NIQQUD = `NEVER emit niqqud, Hebrew vowel points or cantillation marks (Unicode U+0591–U+05C7). Write plain, unpointed Hebrew only (כתיב מלא).`;
+
 const fmt = (t: Transcript) => t.segments.map((s, i) => `#${i} [${s.start}-${s.end}s] ${s.text}`).join("\n");
 
 const ORTHO = `HEBREW ORTHOGRAPHY — the ASR often writes Hebrew words by sound, so fix misspelled Hebrew words to their correct
@@ -28,6 +39,7 @@ export function repairPrompt(t: Transcript, ctx: LectureContext, offset = 0) {
 Fix: (a) English technical terms transliterated into Hebrew letters ("דיפ לרנינג" → "deep learning") when the slides use English;
 (b) phonetically mangled terms, wrong acronyms, broken formula/compound names; (c) misspelled Hebrew words.
 ${ORTHO}
+${NO_NIQQUD}
 ${RULES}
 ${ctxBlock(t, ctx)}
 Transcript (segment index, times, text):
@@ -41,6 +53,7 @@ export function spellingPrompt(t: Transcript, ctx: LectureContext, offset = 0) {
   return `Proofread ONLY the Hebrew spelling in this ASR transcript of a Hebrew lecture ("${ctx.title}").
 Find Hebrew words written phonetically/incorrectly and give the correct spelling. Ignore style, grammar and punctuation.
 ${ORTHO}
+${NO_NIQQUD}
 ${RULES}
 ${ctxBlock(t, ctx, 5000, 2500)}
 Transcript (segment index, text):
@@ -89,9 +102,11 @@ Escape backslashes correctly for JSON. Never put Hebrew inside math; keep math L
 
 /** Apply high-confidence repairs to the transcript (edits stay stored for review). */
 export function applyRepairs(t: Transcript, repairs: Repair[], min = 0.6): Transcript {
-  const segs = t.segments.map((s) => ({ ...s }));
-  for (const r of repairs) {
-    if (r.confidence < min || !r.span) continue;
+  const segs = t.segments.map((s) => ({ ...s, text: stripNiqqud(s.text) }));
+  for (const raw of repairs) {
+    if (raw.confidence < min || !raw.span) continue;
+    const r = { ...raw, span: stripNiqqud(raw.span), replacement: stripNiqqud(raw.replacement ?? "") };
+    if (!r.span) continue;
     const targets = r.segment != null && segs[r.segment] ? [segs[r.segment]] : segs;
     for (const s of targets) s.text = s.text.split(r.span).join(r.replacement);
   }
