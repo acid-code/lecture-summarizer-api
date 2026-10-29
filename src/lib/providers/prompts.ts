@@ -156,8 +156,12 @@ Slides / materials:
 ${slides.slice(0, 60000) || "(none)"}
 Course-pack excerpts: ${ctx.courseExcerpts?.(slides.slice(0, 4000), 6000) || "(none)"}
 Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}]}.
-MATH: write every formula/equation/symbolic expression as LaTeX — inline \\( ... \\), display $$ ... $$ (it is rendered with KaTeX).
-Escape backslashes correctly for JSON. Never put Hebrew inside math; keep math LTR and self-contained.`;
+MATH (rendered with KaTeX — undelimited TeX prints as garbage in the RTL PDF):
+- EVERY formula, equation, symbol or expression MUST be wrapped: inline \\( ... \\), display $$ ... $$. This includes single symbols (\\(\\varepsilon\\), \\(\\delta\\), \\(|H|\\)).
+- NEVER write a bare \\command (\\frac, \\varepsilon, \\ln, \\le ...) in prose outside delimiters. Never write HTML entities (&gt;, &lt;) — use > < or \\le \\ge inside math.
+- Never put Hebrew inside math; keep each formula LTR and self-contained (Hebrew words go outside the delimiters).
+- Prefer standard ASCII/TeX notation for PAC/ML symbols: \\varepsilon, \\delta, e_P(h), |H|, \\mathbb{P}, m(\\varepsilon,\\delta).
+- Escape backslashes correctly for JSON (\\\\frac in the JSON string).`;
 }
 
 /** Slide text for the summary prompt: head of the deck plus the closing slides in full (end-of-deck summaries matter). */
@@ -202,8 +206,12 @@ ${slidesForSummary(ctx.slidesText)}
 Course-pack excerpts: ${ctx.courseExcerpts?.(text, 6000) || "(none)"}
 Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}]}.
 Put cites inline at the end of bullets and in each section's "citation".
-MATH: write every formula/equation/symbolic expression as LaTeX — inline \\( ... \\), display $$ ... $$ (it is rendered with KaTeX).
-Escape backslashes correctly for JSON. Never put Hebrew inside math; keep math LTR and self-contained.`;
+MATH (rendered with KaTeX — undelimited TeX prints as garbage in the RTL PDF):
+- EVERY formula, equation, symbol or expression MUST be wrapped: inline \\( ... \\), display $$ ... $$. This includes single symbols (\\(\\varepsilon\\), \\(\\delta\\), \\(|H|\\)).
+- NEVER write a bare \\command (\\frac, \\varepsilon, \\ln, \\le ...) in prose outside delimiters. Never write HTML entities (&gt;, &lt;) — use > < or \\le \\ge inside math.
+- Never put Hebrew inside math; keep each formula LTR and self-contained (Hebrew words go outside the delimiters).
+- Prefer standard ASCII/TeX notation for PAC/ML symbols: \\varepsilon, \\delta, e_P(h), |H|, \\mathbb{P}, m(\\varepsilon,\\delta).
+- Escape backslashes correctly for JSON (\\\\frac in the JSON string).`;
 }
 
 /** Apply high-confidence repairs to the transcript (edits stay stored for review). */
