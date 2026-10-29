@@ -165,10 +165,13 @@ export function summaryPrompt(t: Transcript, repairs: Repair[], ctx: LectureCont
   const text = t.segments.map((s) => s.text).join(" ");
   const thin = isTranscriptThin(t, ctx.slidesText);
   return `Write a structured study summary in Hebrew (keep English technical terms in English) for the lecture "${ctx.title}".
-SOURCE PRIORITY (strict):
+SOURCE PRIORITY (strict) — the VOICE/transcript leads, slides only support it:
 1. PRIMARY = the repaired lecture transcript below (what the lecturer actually SAID). Build the summary around it:
-   its order, explanations, examples, emphasis, remarks and anything said that is not on the slides.
-2. SUPPORTING = slides. Use them only to fix terminology/formulas and to add slide-only material briefly.
+   follow the ORDER of the speech, its explanations, examples, emphasis, remarks, and anything said that is not on the slides.
+   Section headings and structure come from how the lecture was spoken, NOT from the slide deck outline.
+2. SUPPORTING = slides. Use them only to clarify terms/spelling, formulas, definitions, structure and diagrams for what was said.
+   Do NOT reorganize the summary by slide order and do NOT give slide-only bullets equal weight: slide material that was not
+   discussed goes in briefly (one short bullet, or the glossary), never as the backbone of a section.
 3. BACKGROUND = course-pack excerpts — terminology/definitions only; never add topics not covered in this lecture.
 CITATIONS (mixed, required):
 - Spoken content MUST be cited with lecture time from the transcript, e.g. [t=4:35] (or a range [t=4:35-6:10]).
@@ -178,11 +181,12 @@ CITATIONS (mixed, required):
 ${thin ? `WARNING: the transcript is empty or very short relative to the slides. Say so explicitly at the start of the
 overview (in Hebrew: the recording/transcript covers only a small part of the lecture), summarize what the transcript does
 contain with [t=…] cites, mark the rest as slide-only with [slide N], and set "transcript_thin": true.` : `Set "transcript_thin": false.`}
-Slides: ${(ctx.slidesText ?? "(none)").slice(0, 12000)}
-Course-pack excerpts: ${ctx.courseExcerpts?.(text, 6000) || "(none)"}
-Term repairs already applied: ${JSON.stringify(repairs)}
-Transcript (lecture time M:SS):
+PRIMARY SOURCE — transcript (lecture time M:SS):
 ${fmtTimed(t) || "(empty)"}
+Term repairs already applied: ${JSON.stringify(repairs)}
+SUPPORTING CONTEXT — slides (glossary/structure/diagrams only; not the outline of the summary):
+${(ctx.slidesText ?? "(none)").slice(0, 12000)}
+Course-pack excerpts: ${ctx.courseExcerpts?.(text, 6000) || "(none)"}
 Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}]}.
 Put cites inline at the end of bullets and in each section's "citation".
 MATH: write every formula/equation/symbolic expression as LaTeX — inline \\( ... \\), display $$ ... $$ (it is rendered with KaTeX).

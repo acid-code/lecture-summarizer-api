@@ -181,8 +181,8 @@ export async function advanceJob(jobId: string) {
         break;
       case "asr": {
         const inputs = await audioInputs(lecture.id, lecture.audioUrl);
-        const wantSlides = !!(a as { options?: { slides_only?: boolean } }).options?.slides_only;
-        if ((!inputs.length || wantSlides) && ai.name !== "mock" && materialsText(lecture, course)) {
+        // Voice wins: options.slides_only is honored only when there is no audio.
+        if (!inputs.length && ai.name !== "mock" && materialsText(lecture, course)) {
           // Slides-only: no recording, summarize from presentation/PDF text. Skip ASR + repair.
           a.slidesOnly = true; a.asr = { language: course?.langPrimary ?? "he", segments: [] }; a.asrComplete = true;
           a.repair = []; a.repaired = a.asr;
