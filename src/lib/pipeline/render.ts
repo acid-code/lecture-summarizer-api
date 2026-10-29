@@ -65,7 +65,7 @@ function plainWithBareMath(s: string): string {
         while (end > start && /[.,;:]/.test(s[end - 1])) end--;
         // strip unbalanced leading "(" / trailing ")" that belong to prose
         let a = start, b = end;
-        while (a < b && /[.,;:!]/.test(s[a])) a++; // leading prose punctuation ("חסם: ...")
+        while (a < b && /[.,;:!\s]/.test(s[a])) a++; // leading prose punctuation ("חסם: ...")
         // Hebrew prefix hyphen ("ב-\\delta") is prose, not a minus sign
         if (s[a] === "-" && a > 0 && /[\u0590-\u05FF]/.test(s[a - 1])) a++;
         const frag = () => s.slice(a, b);
