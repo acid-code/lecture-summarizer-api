@@ -260,6 +260,7 @@ export async function advanceJob(jobId: string) {
 /** Keep job errors short and readable (Google errors embed huge JSON). */
 function shortErr(e: unknown): string {
   const m = (e as Error)?.message ?? String(e);
-  if (/\b429\b|RESOURCE_EXHAUSTED/i.test(m)) return "Gemini free daily quota exhausted; retry after reset";
+  if (/daily quota \(RPD\)/.test(m)) return m;
+  if (/\b429\b|RESOURCE_EXHAUSTED/i.test(m)) return "Gemini rate limit / quota hit; retry later";
   return m.length > 400 ? m.slice(0, 400) + "…" : m;
 }

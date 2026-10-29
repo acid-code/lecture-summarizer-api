@@ -18,12 +18,10 @@ export const models = () => {
     : DEFAULT_LADDER;
   return [...new Set([primary, ...fb])];
 };
-export const QUOTA_MSG = "Gemini free daily quota exhausted; retry after reset";
+export const QUOTA_MSG = "All Gemini models have hit their daily quota (RPD); retry after 00:00 UTC";
 export class QuotaError extends Error { constructor() { super(QUOTA_MSG); } }
-/** Models whose daily quota is exhausted in this process (until ~midnight Pacific; we just keep 1h). */
-const exhausted = new Map<string, number>();
-const isQuota = (m: string) => /\b429\b|RESOURCE_EXHAUSTED|quota/i.test(m);
-const isDaily = (m: string) => /PerDay|per day|daily|RPD|retry in \d+h|"retryDelay":\s*"\d{4,}s"/i.test(m);
+import { availableModels, markExhausted, isDailyQuota, isQuotaError, retryDelaySec } from "./quota";
+export { cooldowns } from "./quota";
 const INLINE_MAX = 15 * 1024 * 1024; // inline small files (request limit ~20 MB); larger go through the Files API
 const client = () => new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
 
@@ -43,27 +41,35 @@ async function uploadToGemini(ai: GoogleGenAI, url: string, fallbackMime: string
 }
 
 /**
- * Walk the model ladder. 429/quota → next model immediately (daily limits are marked exhausted for 1h so later
- * calls skip them). 500/503/overloaded → bounded jittered backoff (GEMINI_RETRIES, GEMINI_RETRY_BUDGET_MS).
- * If every model is out of quota, throw a short QuotaError instead of dumping Google's JSON.
+ * Walk the Lite-first ladder, skipping models persisted as RPD-exhausted (until next UTC midnight).
+ * - Daily quota (RPD) 429 → persist cooldown, move to next model, never retry it again today.
+ * - Per-minute (RPM) 429 → short backoff (Google retryDelay, capped) and retry the same model once, then next model.
+ * - 500/503/overloaded → bounded jittered backoff (GEMINI_RETRIES, GEMINI_RETRY_BUDGET_MS).
+ * If every model is exhausted/rate-limited, throw a short QuotaError.
  */
 async function withRetry<T>(f: (model: string) => Promise<T>, tries = Number(process.env.GEMINI_RETRIES || 5)): Promise<T> {
   const budget = Number(process.env.GEMINI_RETRY_BUDGET_MS || 90_000);
   const start = Date.now();
   let transient = 0;
-  const now = Date.now();
-  const ladder = models().filter((m) => (exhausted.get(m) ?? 0) < now);
+  const { available: ladder } = await availableModels(models());
   if (!ladder.length) throw new QuotaError();
-  let quotaHits = 0;
-  for (let i = 0; ; i++) {
-    const model = ladder[i % ladder.length];
+  let idx = 0, rpmRetried = false;
+  for (;;) {
+    if (idx >= ladder.length) throw new QuotaError();
+    const model = ladder[idx];
     try { return await f(model); } catch (e) {
       const msg = (e as Error).message ?? "";
-      if (isQuota(msg)) {
-        quotaHits++;
-        if (isDaily(msg) || quotaHits >= ladder.length) exhausted.set(model, Date.now() + 3600_000);
-        console.warn(`gemini ${model} quota hit, trying next model`);
-        if (quotaHits >= ladder.length) throw new QuotaError();
+      if (isQuotaError(msg)) {
+        if (isDailyQuota(msg)) { await markExhausted(model, msg); idx++; rpmRetried = false; continue; }
+        const wait = Math.min(20_000, (retryDelaySec(msg) ?? 5) * 1000) + Math.random() * 1000;
+        if (!rpmRetried && Date.now() - start + wait <= budget) {
+          console.warn(`gemini ${model}: per-minute rate limit (RPM), retrying same model in ${Math.round(wait / 1000)}s`);
+          rpmRetried = true;
+          await new Promise((r) => setTimeout(r, wait));
+          continue;
+        }
+        console.warn(`gemini ${model}: still rate-limited, trying next model`);
+        idx++; rpmRetried = false;
         continue;
       }
       if (++transient >= tries || !/\b(500|503)\b|UNAVAILABLE|overloaded|INTERNAL/i.test(msg)) throw e;

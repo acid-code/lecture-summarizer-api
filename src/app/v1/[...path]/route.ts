@@ -18,6 +18,10 @@ async function route(req: Request, { params }: Ctx) {
     return Response.json({ error: (e as Error).message }, { status: 503 });
   }
   const [a, b, c, d] = p;
+  if (a === "quota" && !b && m === "GET") {
+    const { cooldowns } = await import("@/lib/providers/quota");
+    return Response.json({ exhausted: await cooldowns() });
+  }
   try {
     if (a === "courses" && !b) return m === "POST" ? h.createCourse(req) : h.listCourses();
     if (a === "courses" && b && c === "context" && m === "POST") return h.uploadContext(req, b);

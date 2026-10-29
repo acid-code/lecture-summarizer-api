@@ -46,6 +46,7 @@ export function ensureDb() {
       `CREATE INDEX IF NOT EXISTS lecture_files_lecture ON lecture_files(lecture_id)`,
       `CREATE TABLE IF NOT EXISTS course_files (id TEXT PRIMARY KEY, course_id TEXT NOT NULL REFERENCES courses(id), name TEXT NOT NULL, mime TEXT NOT NULL, url TEXT NOT NULL, text TEXT, size INTEGER, created_at INTEGER NOT NULL)`,
       `CREATE INDEX IF NOT EXISTS course_files_course ON course_files(course_id)`,
+      `CREATE TABLE IF NOT EXISTS model_cooldowns (model TEXT PRIMARY KEY, exhausted_until INTEGER NOT NULL, reason TEXT, updated_at INTEGER NOT NULL)`,
     ], "write");
   })();
   ready.catch(() => { ready = null; });
