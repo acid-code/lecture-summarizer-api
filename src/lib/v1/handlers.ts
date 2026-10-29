@@ -9,6 +9,7 @@ import { db, ensureDb, schema } from "@/db";
 import { pdfToText } from "../context";
 import { isPptx, pptxToText } from "../pptx";
 import { bad, id, notFound } from "../http";
+import { dedupeTranscript } from "../providers/dedupe";
 import { advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, retryJob, type Artifacts } from "../pipeline";
 import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
 import { blobAccess, isAcceptableUploadUrl, readFileUrl, saveFile } from "../storage";
@@ -296,8 +297,9 @@ export async function getTranscript(lid: string) {
   const jobs = await db.select().from(schema.jobs).where(eq(schema.jobs.lectureId, lid)).orderBy(desc(schema.jobs.updatedAt));
   for (const job of jobs) {
     const a = JSON.parse(job.artifacts) as Artifacts;
-    const t = a.repaired ?? a.asr;
-    if (!t?.segments?.length) continue;
+    const raw = a.repaired ?? a.asr;
+    if (!raw?.segments?.length) continue;
+    const t = dedupeTranscript(raw);
     return j({ lecture_id: lid, job_id: job.id, source: a.repaired ? "repaired" : "asr", complete: !!a.asrComplete, language: t.language,
       segments: t.segments.map((s) => ({ t0: s.start, t1: s.end, text: cleanHebrew(stripNiqqud(s.text)) })) });
   }
