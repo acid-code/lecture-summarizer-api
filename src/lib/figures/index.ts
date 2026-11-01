@@ -148,8 +148,11 @@ Reply with JSON only: {"figures":[{"id":"<id>","section":<index>,"caption":"..."
 }
 
 /** Main entry: decks (PDF/PPTX bytes) + finished summary → figures to embed. Never throws. */
+/** Last reason pickFigures returned nothing / failed (diagnostics, surfaced in artifacts). */
+export let lastFigureNote = "";
 export async function pickFigures(decks: SlideDeck[], s: LectureSummary): Promise<Figure[]> {
-  if (!figuresEnabled() || !decks.length || !s.sections?.length) return [];
+  lastFigureNote = !figuresEnabled() ? "FIGURES=off" : !decks.length ? "no decks" : !s.sections?.length ? "no sections" : "";
+  if (lastFigureNote) return [];
   try {
     const all: PageInfo[] = [];
     const pdfBytes = new Map<string, Uint8Array>();
@@ -164,7 +167,7 @@ export async function pickFigures(decks: SlideDeck[], s: LectureSummary): Promis
     const max = MAX();
     // Pre-filter for cost: only pages with images or vector drawings, best-scoring first, capped.
     const cands = all.filter((p) => p.imageOps > 0 || p.score > 0).sort((a, b) => b.score - a.score).slice(0, MAX_PAGES());
-    if (!cands.length) return [];
+    if (!cands.length) { lastFigureNote = `no candidate pages (${all.length} analyzed)`; return []; }
     for (const c of cands) c.jpeg = await renderJpeg(docs.get(c.deck)!, pdfBytes.get(c.deck)!, c.page);
     const he = /[\u0590-\u05FF]/.test(s.overview + s.title);
     let picks: { c: PageInfo; section: number; caption: string }[] | null = null;
@@ -177,5 +180,5 @@ export async function pickFigures(decks: SlideDeck[], s: LectureSummary): Promis
     const multi = decks.length > 1;
     return picks.sort((a, b) => a.c.deck.localeCompare(b.c.deck) || a.c.page - b.c.page)
       .map(({ c, section, caption }) => ({ page: c.page, deck: multi ? c.deck : undefined, caption, section, src: `data:image/jpeg;base64,${c.jpeg!.toString("base64")}` }));
-  } catch (e) { console.warn("figure extraction failed, text-only PDF:", (e as Error).message); return []; }
+  } catch (e) { lastFigureNote = `failed: ${(e as Error).message}`.slice(0, 300); console.warn("figure extraction failed, text-only PDF:", (e as Error).message); return []; }
 }
