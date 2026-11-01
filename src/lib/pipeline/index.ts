@@ -284,6 +284,9 @@ export async function advanceJob(jobId: string) {
         break;
       }
     }
+    // A final POST /process may clear options.live while this (long) ASR call runs; don't overwrite it with our stale copy.
+    const fresh = await db.query.jobs.findFirst({ where: eq(schema.jobs.id, jobId) });
+    if (fresh) { const fo = (JSON.parse(fresh.artifacts) as { options?: object }).options; if (fo) (a as { options?: object }).options = fo; }
     const ns = next ?? "done";
     if (ns !== "asr" || current !== "asr") a.progressDetail = { stage: ns, label: stageLabel(ns) };
     const [row] = await db.update(schema.jobs)
