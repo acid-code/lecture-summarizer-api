@@ -18,3 +18,13 @@ test("unmatched figure goes after last section; no figures = unchanged", () => {
   assert.ok(!renderStudyHtml(s).includes("<figure"));
 });
 test("lexical section match", () => { assert.equal(matchSection(s, "תדירות אללים באוכלוסייה"), 1); });
+import { finalizePicks, citedSections } from "../src/lib/figures";
+const g = { title: "t", overview: "o", glossary: [], sections: [
+  { heading: "intro", bullets: ["x [slide 3]"] }, { heading: "linkage", bullets: ["y [slide 6]"], citation: "slide 5-7" }, { heading: "RF", bullets: ["z"], citation: "slides 18, 21" }] };
+const pk = (page: number, section: number, relevance: number, sha = `h${page}`, dh: bigint | null = null) => ({ c: { page, sha, dhash: dh }, section, relevance, caption: "" });
+test("cited slide ranges", () => { assert.deepEqual(citedSections(g, 6), [1]); assert.deepEqual(citedSections(g, 21), [2]); });
+test("no duplicate image, one per section, cited section wins, weak dropped", () => {
+  const out = finalizePicks(g, [pk(16, 0, 7, "A", 0n), pk(21, 0, 9, "B", 1n), pk(6, 0, 8), pk(40, 2, 3), pk(30, 0, 6.5)], 6, 1, 6);
+  assert.deepEqual(out.map((p) => [p.c.page, p.section]), [[21, 2], [6, 1], [30, 0]]); // 16 ≈ 21 (dhash dist 1) dropped
+});
+test("empty picks ok", () => { assert.deepEqual(finalizePicks(g, [], 6), []); });
