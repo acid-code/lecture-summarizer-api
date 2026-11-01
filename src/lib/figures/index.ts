@@ -44,7 +44,11 @@ const CHAT_URL = "https://api.mistral.ai/v1/chat/completions";
 
 const run = promisify(execFile);
 /** Load the native canvas via require (dynamic import() breaks under some loaders/bundlers). */
-const canvasMod = async () => createRequire(path.join(process.cwd(), "package.json"))("@napi-rs/canvas") as typeof import("@napi-rs/canvas");
+const canvasMod = async (): Promise<typeof import("@napi-rs/canvas")> => {
+  // Next/webpack compiles node:module createRequire to undefined on Vercel; @napi-rs/canvas is a serverExternalPackage, so import() stays native there.
+  try { const m = await import("@napi-rs/canvas"); return ((m as { default?: unknown }).default ?? m) as typeof import("@napi-rs/canvas"); }
+  catch { return createRequire(path.join(process.cwd(), "package.json"))("@napi-rs/canvas") as typeof import("@napi-rs/canvas"); }
+};
 /** PPTX → PDF via LibreOffice headless. Returns null when soffice is missing (e.g. Vercel). */
 export async function pptxToPdf(data: Uint8Array): Promise<Uint8Array | null> {
   const dir = await mkdtemp(path.join(tmpdir(), "pptx-"));
