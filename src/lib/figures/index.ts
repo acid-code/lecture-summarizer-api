@@ -43,7 +43,7 @@ const MAX_PAGES = () => Number(env("FIGURES_MAX_PAGES", "24"));
 /** Max figures under one section (default 1 = only the single best slide per section). */
 const PER_SECTION = () => Math.max(1, Number(env("FIGURES_PER_SECTION", "1")));
 /** Minimum model relevance (0-10) to keep a pick. */
-const MIN_REL = () => Number(env("FIGURES_MIN_RELEVANCE", "6"));
+const MIN_REL = () => Number(env("FIGURES_MIN_RELEVANCE", "7"));
 /** dHash hamming distance (of 64) at or below which two slides count as the same image (e.g. PDF + PPTX of one deck, or a repeated slide). */
 const DUP_DIST = () => Number(env("FIGURES_DUP_DISTANCE", "6"));
 const WIDTH = () => Number(env("FIGURES_WIDTH", "1000"));
@@ -222,6 +222,15 @@ Reply with JSON only: {"figures":[{"id":"<id>","section":<index>,"relevance":<0-
 
 /** Main entry: decks (PDF/PPTX bytes) + finished summary → figures to embed. Never throws. */
 /** Last reason pickFigures returned nothing / failed (diagnostics, surfaced in artifacts). */
+const TITLE_RE = /\b(lecture|lesson|class|week|chapter)\s*\d+|\b(introduction|agenda|outline|overview|contents|thank you|questions\?)\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}|\b(prof\.?|professor|dr\.)\s|הרצאה\s*\d+|שיעור\s*\d+|מבוא|תוכן עניינים|סדר היום|מרצה/i;
+/** Cover / title / agenda slides never become figures (models ignore "skip title slides"). */
+export function isTitleSlide(p: { page: number; text: string; imageOps: number }): boolean {
+  const t = p.text.replace(/\s+/g, " ").trim();
+  if (p.page === 1) return true; // deck cover
+  if (p.page <= 3 && (t.length < 220 || TITLE_RE.test(t)) && p.imageOps <= 1) return true;
+  if (TITLE_RE.test(t) && t.length < 160 && p.imageOps === 0) return true;
+  return false;
+}
 export let lastFigureNote = "";
 export async function pickFigures(decks: SlideDeck[], s: LectureSummary): Promise<Figure[]> {
   lastFigureNote = !figuresEnabled() ? "FIGURES=off" : !decks.length ? "no decks" : !s.sections?.length ? "no sections" : "";
@@ -239,13 +248,14 @@ export async function pickFigures(decks: SlideDeck[], s: LectureSummary): Promis
     }
     const max = MAX();
     // Pre-filter for cost: pages with images or vector drawings. Slides cited by a section go first (most likely relevant), then best-scoring; capped.
-    const visual = all.filter((p) => p.imageOps > 0 || p.score > 0);
+    const visual = all.filter((p) => (p.imageOps > 0 || p.score > 0) && !isTitleSlide(p));
     const isCited = (p: PageInfo) => citedSections(s, p.page).length > 0;
     const pool = [...visual.filter(isCited).sort((a, b) => b.score - a.score), ...visual.filter((p) => !isCited(p)).sort((a, b) => b.score - a.score)];
     const cands: PageInfo[] = [];
     for (const c of pool) {
       if (cands.length >= MAX_PAGES()) break;
       c.jpeg = await renderJpeg(docs.get(c.deck)!, pdfBytes.get(c.deck)!, c.page);
+      if (c.jpeg.length < 3000) continue; // near-blank render → would print as an empty band
       c.sha = createHash("sha1").update(c.jpeg).digest("hex"); c.dhash = await dhash(c.jpeg);
       if (cands.some((k) => sameImage(k, c))) continue; // same slide in PDF+PPTX, or repeated slide: send once
       cands.push(c);

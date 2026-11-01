@@ -192,8 +192,9 @@ export function slidesForSummary(slides?: string | null, head = 10000, tail = 50
 export function depthTargets(t: Transcript) {
   const segs = t.segments ?? [];
   const minutes = segs.length ? Math.max(1, (segs[segs.length - 1].end - segs[0].start) / 60) : 0;
-  const sections = Math.min(24, Math.max(4, Math.round(minutes / 5)));
-  return { minutes: Math.round(minutes), sections, bulletsLo: 5, bulletsHi: 12 };
+  const long = minutes >= 90;
+  const sections = Math.min(long ? 36 : 28, Math.max(4, Math.round(minutes / (long ? 3.5 : 4.5))));
+  return { minutes: Math.round(minutes), sections, bulletsLo: long ? 6 : 5, bulletsHi: long ? 14 : 12 };
 }
 
 /** Coverage + professor-emphasis rules: summaries were too short and dropped distinct subjects / specific details. */
@@ -202,7 +203,9 @@ export function depthBlock(t: Transcript) {
   return `DEPTH & COVERAGE (the previous summaries were TOO SHORT and dropped topics — fix that):
 - Cover EVERY distinct subject, sub-topic, example and digression the lecturer spent real time on, in spoken order. A topic
   change in the transcript = its own section (or sub-group of bullets); never merge unrelated topics to save space.
-- Target for this ~${d.minutes}-minute lecture: about ${d.sections} sections (more if the lecture changes subject often), each with
+- The transcript below spans the whole ~${d.minutes} minutes of speech. Sections must cover it end to end;
+  [t=…] citations should be spread across the full time range, not concentrated in one window.
+- HARD MINIMUM for this ~${d.minutes}-minute lecture: at least ${d.sections} spoken-topic sections (more if the lecture changes subject often), each with
   ${d.bulletsLo}-${d.bulletsHi} bullets. Each bullet is 1-3 full, information-dense sentences — explanation + the specific detail, not a headline.
 - Keep the SPECIFICS the lecturer gave: exact numbers, values, units, thresholds, named examples, experiments, names, dates,
   step-by-step procedures, formula derivations, comparisons ("X vs Y"), exceptions and edge cases. Prefer the concrete detail over a generic paraphrase.
@@ -274,4 +277,24 @@ export function applyRepairs(t: Transcript, repairs: Repair[], min = 0.6): Trans
     for (const s of targets) s.text = s.text.split(r.span).join(r.replacement);
   }
   return { ...t, segments: segs.map((s) => ({ ...s, text: cleanHebrew(s.text) })) };
+}
+
+/** Spoken sections (excluding the professor-notes / slides-summary sections). */
+export function spokenSectionCount(s: { sections?: { heading?: string }[] }): number {
+  return (s.sections ?? []).filter((x) => !/דגשים חשובים|סיכום מהמצגת/.test(x.heading ?? "")).length;
+}
+/** Summary clearly under-produced vs depth target → worth one "expand" retry. */
+export function summaryTooShort(s: { sections?: { heading?: string; bullets?: string[] }[] }, t: Transcript): boolean {
+  const d = depthTargets(t);
+  if (d.minutes < 20) return false;
+  const n = spokenSectionCount(s);
+  const bullets = (s.sections ?? []).reduce((a, x) => a + (x.bullets?.length ?? 0), 0);
+  return n < Math.ceil(d.sections * 0.6) || bullets < d.sections * d.bulletsLo * 0.5;
+}
+export function expandNote(prevSections: number, t: Transcript): string {
+  const d = depthTargets(t);
+  return `\n\nIMPORTANT — YOUR PREVIOUS ANSWER WAS FAR TOO SHORT (${prevSections} sections for a ~${d.minutes}-minute lecture). ` +
+    `Rewrite it from the FULL transcript (beginning, middle AND end): at least ${d.sections} spoken-topic sections with ` +
+    `${d.bulletsLo}-${d.bulletsHi} dense bullets each, plus "דגשים חשובים של המרצה" and a glossary of 8-25 terms. ` +
+    `Add more topics and concrete details the lecturer said — no filler, no repetition.`;
 }
