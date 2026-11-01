@@ -8,10 +8,12 @@ import { applyRepairs, isTranscriptThin, cleanTranscript } from "../providers/pr
 import { dedupeTranscript } from "../providers/dedupe";
 import { deleteFileUrl, saveArtifact } from "../storage";
 import { renderStudyHtml } from "./render";
+import { figuresEnabled, pickFigures, type SlideDeck } from "../figures";
+import { readFileUrl } from "../storage";
 
 export interface Artifacts {
   asr?: Transcript; /** ASR before dedupe (append-only), so later dedupe changes can be re-applied from it */ asrRaw?: Transcript; asrParts?: number; /** next ASR window start (s) inside the current part */ asrWindowStart?: number; asrComplete?: boolean; repair?: Repair[]; repaired?: Transcript;
-  summary?: LectureSummary; html?: string; pdf?: string; audioDeleted?: boolean;
+  summary?: LectureSummary; /** figures embedded in the PDF (metadata only) */ figures?: { page: number; deck?: string; section: number; caption: string }[]; html?: string; pdf?: string; audioDeleted?: boolean;
   /** No audio on the server: summary built from lecture slides/PDFs (or course files) only; ASR+repair skipped. */
   slidesOnly?: boolean;
   /** Detail about the next/current unit of work, for client progress text. */
@@ -46,6 +48,20 @@ async function cleanupAudio(lectureId: string) {
   await db.update(schema.segments).set({ url: null }).where(eq(schema.segments.lectureId, lectureId));
   const l = await db.query.lectures.findFirst({ where: eq(schema.lectures.id, lectureId) });
   if (l?.audioUrl) { await deleteFileUrl(l.audioUrl); await db.update(schema.lectures).set({ audioUrl: null }).where(eq(schema.lectures.id, lectureId)); }
+}
+
+/** PDF/PPTX decks attached to the lecture (for figure embedding). Unreadable files are skipped. */
+async function slideDecks(lecture: { id: string; slidesUrl: string | null }): Promise<SlideDeck[]> {
+  const rows = await db.select().from(schema.lectureFiles).where(eq(schema.lectureFiles.lectureId, lecture.id)).orderBy(asc(schema.lectureFiles.createdAt));
+  const files = rows.length ? rows.map((r) => ({ name: r.name, mime: r.mime, url: r.url }))
+    : lecture.slidesUrl ? [{ name: decodeURIComponent(lecture.slidesUrl.split("/").pop()!.split("?")[0]), mime: "", url: lecture.slidesUrl }] : [];
+  const out: SlideDeck[] = [];
+  for (const f of files) {
+    if (!/pdf|presentationml/.test(f.mime) && !/\.(pdf|pptx)$/i.test(f.name)) continue;
+    try { const r = await readFileUrl(f.url); out.push({ name: f.name, mime: f.mime || r.mime || "", data: new Uint8Array(r.data) }); }
+    catch (e) { console.warn("deck unreadable, skipped for figures:", f.name, (e as Error).message); }
+  }
+  return out;
 }
 
 /** Materials text usable for a slides-only summary: lecture decks first, else course files. */
@@ -235,7 +251,9 @@ export async function advanceJob(jobId: string) {
         break;
       }
       case "pdf": {
-        const html = renderStudyHtml(a.summary!);
+        const figures = figuresEnabled() ? await pickFigures(await slideDecks(lecture), a.summary!) : [];
+        a.figures = figures.map(({ src: _src, ...f }) => f);
+        const html = renderStudyHtml(a.summary!, figures);
         a.html = await saveArtifact(`${lecture.id}-study.html`, html, "text/html; charset=utf-8");
         const pdf = await htmlToPdf(html).catch((e) => { console.warn("pdf render failed, HTML only:", e); return null; });
         a.pdf = pdf ? await saveArtifact(`${lecture.id}-study.pdf`, pdf, "application/pdf") : a.html;
