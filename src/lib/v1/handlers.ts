@@ -310,6 +310,8 @@ function jobView(job: typeof schema.jobs.$inferSelect) {
   const state = job.stage === "done" ? "done" : job.stage === "failed" ? "failed" : job.stage === "queued" ? "queued" : "running";
   return { job_id: job.id, lecture_id: job.lectureId, state, stage: job.stage, progress: progressOf(job.stage), error: job.error,
     pdf_ready: !!a.pdf, slides_only: !!a.slidesOnly, transcript_ready: !!(a.repaired ?? a.asr)?.segments?.length, transcript_thin: a.summary?.transcript_thin ?? null,
+    asr_incomplete: !!a.asrIncomplete, asr_check: a.asrCheck ?? null, coverage: a.coverage ?? null,
+    warning: a.asrIncomplete ? `ASR incomplete — reprocess needed (transcript ends ${Math.round((a.asrCheck?.asrEndSec ?? 0) / 60)} of ${Math.round((a.asrCheck?.uploadedSec ?? 0) / 60)} min uploaded)` : a.coverage && !a.coverage.ok ? `Summary covers ${Math.round(a.coverage.ratio * 100)}% of the lecture` : null,
     updated_at: new Date(job.updatedAt).toISOString(), repairs: a.repair ?? null,
     progress_detail: job.stage === "failed" || job.stage === "done" || a.progressDetail?.stage !== job.stage
       ? { stage: job.stage, label: job.stage === "asr" ? `ASR part ${(a.asrParts ?? 0) + 1}` : stageLabel(job.stage) }

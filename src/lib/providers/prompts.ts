@@ -191,9 +191,9 @@ export function slidesForSummary(slides?: string | null, head = 10000, tail = 50
 /** Target density scaled by spoken length so long lectures get proportionally more sections/bullets (not padding). */
 export function depthTargets(t: Transcript) {
   const segs = t.segments ?? [];
-  const minutes = segs.length ? Math.max(1, (segs[segs.length - 1].end - segs[0].start) / 60) : 0;
+  const minutes = segs.length ? Math.max(1, (Math.max(...segs.map((x) => x.end)) - Math.min(...segs.map((x) => x.start))) / 60) : 0;
   const long = minutes >= 90;
-  const sections = Math.min(long ? 36 : 28, Math.max(4, Math.round(minutes / (long ? 3.5 : 4.5))));
+  const sections = Math.min(long ? 36 : 28, Math.max(4, Math.round(minutes / (long ? 3.5 : 4))));
   return { minutes: Math.round(minutes), sections, bulletsLo: long ? 6 : 5, bulletsHi: long ? 14 : 12 };
 }
 

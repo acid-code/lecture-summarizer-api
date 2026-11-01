@@ -1,3 +1,4 @@
+import { asrCompleteness, computeCoverage, fixBackwardRanges, fmtWin, mergeGapSections, sliceTranscript, type Coverage } from "./coverage";
 import { asc, eq } from "drizzle-orm";
 import { db, ensureDb, schema } from "@/db";
 import { STAGES, type Stage } from "@/db/schema";
@@ -12,7 +13,7 @@ import { figuresEnabled, pickFigures, lastFigureNote, type SlideDeck } from "../
 import { readFileUrl } from "../storage";
 
 export interface Artifacts {
-  asr?: Transcript; /** ASR before dedupe (append-only), so later dedupe changes can be re-applied from it */ asrRaw?: Transcript; asrParts?: number; /** next ASR window start (s) inside the current part */ asrWindowStart?: number; asrComplete?: boolean; repair?: Repair[]; repaired?: Transcript;
+  asr?: Transcript; /** ASR before dedupe (append-only), so later dedupe changes can be re-applied from it */ asrRaw?: Transcript; asrParts?: number; /** next ASR window start (s) inside the current part */ asrWindowStart?: number; asrComplete?: boolean; /** ASR ended well before the uploaded audio (e.g. parts whose blobs expired) */ asrIncomplete?: boolean; asrCheck?: ReturnType<typeof asrCompleteness>; coverage?: Coverage | null; coverageBefore?: Coverage | null; repair?: Repair[]; repaired?: Transcript;
   summary?: LectureSummary; /** figures embedded in the PDF (metadata only) */ figures?: { page: number; deck?: string; section: number; caption: string }[]; figuresNote?: string; html?: string; pdf?: string; audioDeleted?: boolean;
   /** No audio on the server: summary built from lecture slides/PDFs (or course files) only; ASR+repair skipped. */
   slidesOnly?: boolean;
@@ -261,7 +262,13 @@ export async function advanceJob(jobId: string) {
             a.progressDetail = { stage: "asr", part: pn + 1, parts: list.length, window, windows,
               label: `ASR part ${pn + 1}/${list.length}` + (windows === 1 ? "" : ` · window ${window}/${windows ?? "?"}`) + (batch > 1 ? ` (+${batch - 1} more in parallel)` : "") };
           }
-        } else a.asrComplete = true;
+        } else {
+          a.asrComplete = true;
+          const segRows = await db.select().from(schema.segments).where(eq(schema.segments.lectureId, lecture.id));
+          a.asrCheck = asrCompleteness(a.asr, segRows.reduce((n, r) => n + (r.duration ?? 0), 0));
+          a.asrIncomplete = a.asrCheck.incomplete || undefined;
+          if (a.asrIncomplete) console.warn(`ASR incomplete: ends ${a.asrCheck.asrEndSec}s of ${a.asrCheck.uploadedSec}s uploaded (${segRows.filter((r) => !r.url).length} parts without audio URL)`);
+        }
         break;
       }
       case "repair":
@@ -275,6 +282,19 @@ export async function advanceJob(jobId: string) {
       {
         const tr = a.repaired ?? a.asr ?? { language: "he", segments: [] };
         a.summary = await ai.summarize(tr, a.repair ?? [], ctx);
+        if (!a.slidesOnly) {
+          const cov = computeCoverage(tr, a.summary);
+          a.coverageBefore = cov;
+          if (cov && !cov.ok && process.env.COVERAGE_FILL !== "0") {
+            // Focused "fill gaps" pass over the uncovered windows (plus a short lead-in), merged into the summary.
+            const wins = gapsAll(cov).map(([x, y]) => [Math.max(cov.asrStart, x - 60), y] as [number, number]);
+            console.warn(`summary coverage ${cov.ratio} (gaps ${wins.map(fmtWin).join(", ")}); filling gaps`);
+            const extra = await ai.summarize(sliceTranscript(tr, wins), a.repair ?? [], { ...ctx, title: `${ctx.title} (missing parts: ${wins.map(fmtWin).join(", ")})` }).catch((e) => { console.warn("gap fill failed:", (e as Error).message); return null; });
+            if (extra) a.summary = mergeGapSections(a.summary, extra);
+          }
+          a.summary = fixBackwardRanges(a.summary);
+          a.coverage = computeCoverage(tr, a.summary);
+        } else a.summary = fixBackwardRanges(a.summary);
         // Server-side truth wins over the model's flag.
         a.summary.transcript_thin = a.slidesOnly ? false : isTranscriptThin(tr, ctx.slidesText) || !!a.summary.transcript_thin;
         break;
@@ -294,7 +314,7 @@ export async function advanceJob(jobId: string) {
     const fresh = await db.query.jobs.findFirst({ where: eq(schema.jobs.id, jobId) });
     if (fresh) { const fo = (JSON.parse(fresh.artifacts) as { options?: object }).options; if (fo) (a as { options?: object }).options = fo; }
     const ns = next ?? "done";
-    if (ns !== "asr" || current !== "asr") a.progressDetail = { stage: ns, label: stageLabel(ns) };
+    if (ns !== "asr" || current !== "asr") a.progressDetail = { stage: ns, label: stageLabel(ns) + (a.asrIncomplete ? " · ASR incomplete — reprocess needed" : "") };
     const [row] = await db.update(schema.jobs)
       .set({ stage: next ?? "done", artifacts: JSON.stringify(a), error: null, updatedAt: Date.now() })
       .where(eq(schema.jobs.id, jobId)).returning();
@@ -314,3 +334,6 @@ function shortErr(e: unknown): string {
   if (/\b429\b|RESOURCE_EXHAUSTED/i.test(m)) return "Gemini rate limit / quota hit; retry later";
   return m.length > 400 ? m.slice(0, 400) + "…" : m;
 }
+
+/** No big gap but low ratio: target every uncovered stretch > 3 min. */
+function gapsAll(c: Coverage): [number, number][] { return c.gaps.length ? c.gaps : c.holes.length ? c.holes : [[c.asrStart, c.asrEnd]]; }
