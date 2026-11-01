@@ -96,9 +96,12 @@ export async function resummarizeJob(jobId: string, force = false): Promise<Retr
   if (!job) return { ok: false, reason: "not_found" };
   const a = JSON.parse(job.artifacts) as Artifacts;
   const stuck = Date.now() - job.updatedAt > STUCK_MS;
-  if (!a.asrComplete || (job.stage !== "done" && job.stage !== "failed" && !stuck && !force)) return { ok: false, reason: "not_retryable", job };
+  // Incomplete terminal work (summary/pdf missing, e.g. a crashed/timed-out summary call) is always restartable.
+  const incomplete = !!a.asrComplete && (!a.summary || !a.pdf) && a.progressDetail?.stage !== job.stage; // honest in-flight work still needs stuck/force
+  if (!a.asrComplete || (job.stage !== "done" && job.stage !== "failed" && !stuck && !force && !incomplete)) return { ok: false, reason: "not_retryable", job };
   delete a.summary; delete a.html; delete a.pdf;
   const stage = resumeStage(a);
+  a.progressDetail = { stage, label: stageLabel(stage) }; // never leave a stale "Done" behind
   const [row] = await db.update(schema.jobs).set({ stage, error: null, artifacts: JSON.stringify(a), updatedAt: Date.now() })
     .where(eq(schema.jobs.id, jobId)).returning();
   return { ok: true, job: row };
@@ -113,9 +116,12 @@ export async function rerepairJob(jobId: string, force = false): Promise<RetryRe
   if (!job) return { ok: false, reason: "not_found" };
   const a = JSON.parse(job.artifacts) as Artifacts;
   const stuck = Date.now() - job.updatedAt > STUCK_MS;
-  if (!a.asrComplete || (job.stage !== "done" && job.stage !== "failed" && !stuck && !force)) return { ok: false, reason: "not_retryable", job };
+  // Incomplete terminal work (summary/pdf missing, e.g. a crashed/timed-out summary call) is always restartable.
+  const incomplete = !!a.asrComplete && (!a.summary || !a.pdf) && a.progressDetail?.stage !== job.stage; // honest in-flight work still needs stuck/force
+  if (!a.asrComplete || (job.stage !== "done" && job.stage !== "failed" && !stuck && !force && !incomplete)) return { ok: false, reason: "not_retryable", job };
   delete a.repair; delete a.repaired; delete a.summary; delete a.html; delete a.pdf;
   const stage = resumeStage(a);
+  a.progressDetail = { stage, label: stageLabel(stage) }; // never leave a stale "Done" behind
   const [row] = await db.update(schema.jobs).set({ stage, error: null, artifacts: JSON.stringify(a), updatedAt: Date.now() })
     .where(eq(schema.jobs.id, jobId)).returning();
   return { ok: true, job: row };
