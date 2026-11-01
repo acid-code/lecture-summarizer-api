@@ -2,9 +2,22 @@ import katex from "katex";
 import type { LectureSummary } from "../providers/types";
 import type { Figure } from "../figures";
 
-const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+/** Coerce any model-emitted value (number/object/array/null) to text so `.replace` never crashes. */
+export const str = (x: unknown): string => {
+  if (x == null) return "";
+  if (typeof x === "string") return x;
+  if (Array.isArray(x)) return x.map(str).filter(Boolean).join(" ");
+  if (typeof x === "object") {
+    const o = x as Record<string, unknown>;
+    const t = o.text ?? o.content ?? o.body ?? o.bullet ?? o.point ?? o.title;
+    return t != null ? str(t) : Object.values(o).map(str).filter(Boolean).join(" — ");
+  }
+  return String(x);
+};
+const arr = <T = unknown>(x: unknown): T[] => (Array.isArray(x) ? x : x == null ? [] : [x]) as T[];
+const esc = (s: unknown) => str(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 /** Models sometimes emit HTML entities themselves (`&gt;`); decode first so we never double-escape. */
-const unent = (s: string) => s.replace(/&(gt|lt|amp|quot|#39);/g, (_, e) => ({ gt: ">", lt: "<", amp: "&", quot: '"', "#39": "'" })[e as string]!);
+const unent = (s: unknown) => str(s).replace(/&(gt|lt|amp|quot|#39);/g, (_, e) => ({ gt: ">", lt: "<", amp: "&", quot: '"', "#39": "'" })[e as string]!);
 /**
  * Wrap Latin runs (and any stray `\command…` TeX run) in LTR isolates so English terms / leftover TeX
  * render correctly inside RTL Hebrew instead of being reordered into garbage like `frac\ - 1)left\`.
@@ -84,17 +97,17 @@ function plainWithBareMath(s: string): string {
 /** Source citations like `[slide 7, t=6:00-6:18]` / `[t=9:20, slides 8-9]` — isolated whole so brackets never split. */
 const CITE = /\[[^\[\]\n$]*?(?:\bslides?\b|\bt\s*=|\d{1,2}:\d{2})[^\[\]\n$]*\]/gi;
 export function renderCite(c: string): string {
-  return `<bdi class="cite-inline" dir="ltr">${esc(c.replace(/\s+/g, " "))}</bdi>`;
+  return `<bdi class="cite-inline" dir="ltr">${esc(str(c).replace(/\s+/g, " "))}</bdi>`;
 }
 
 /** Strip glyphs the embedded fonts can't draw (tofu): stray Arabic letters the model mixes into Hebrew, U+FFFD, emoji/symbols. */
-export function cleanGlyphs(s: string): string {
-  return s.replace(/[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/g, "")
+export function cleanGlyphs(s: unknown): string {
+  return str(s).replace(/[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/g, "")
     .replace(/[\uFFFD\u200B\uFEFF]/g, "")
     .replace(/[\u2600-\u27BF\u2B50\u2B55]|[\uD83C-\uDBFF][\uDC00-\uDFFF]|\uFE0F/g, "")
     .replace(/[ \t]{2,}/g, " ");
 }
-export function bidi(raw: string): string {
+export function bidi(raw: unknown): string {
   const s = cleanGlyphs(unent(unent(raw ?? "")));
   let out = "", last = 0;
   for (const m of s.matchAll(CITE)) {
@@ -118,16 +131,16 @@ function bidiMath(s: string): string {
 
 /** "Big picture" appendix after the glossary (optional). RTL like the body when it contains Hebrew; LTR only if fully non-Hebrew. Math/cites/Latin stay LTR-isolated via bidi(). */
 export function renderBigPicture(b: LectureSummary["big_picture"]): string {
-  if (!b || (!b.intent?.trim() && !b.themes?.length && !b.missed_terms?.length)) return "";
-  const themes = (b.themes ?? []).filter((t) => t?.title || t?.explanation);
-  const terms = (b.missed_terms ?? []).filter((t) => t?.term);
+  if (!b || (!str(b.intent).trim() && !b.themes?.length && !b.missed_terms?.length)) return "";
+  const themes = arr<any>(b.themes).filter((t) => t?.title || t?.explanation);
+  const terms = arr<any>(b.missed_terms).filter((t) => t?.term);
   const all = [b.intent, ...themes.flatMap((t) => [t.title, t.explanation]), ...terms.flatMap((t) => [t.term, t.explanation])].join(" ");
   const he = /[\u0590-\u05FF]/.test(all);
   const [dir, lang, h2, h3] = he
     ? ["rtl", "he", "התמונה הגדולה — מה ההרצאה ניסתה ללמד", "מונחים שהופיעו בהרצאה"]
     : ["ltr", "en", "Big picture — what this lecture was trying to teach", "Terms used in the lecture"];
   return `<section class="big-picture" dir="${dir}" lang="${lang}"><h2>${h2}</h2>
-${b.intent?.trim() ? `<p>${bidi(b.intent)}</p>` : ""}
+${str(b.intent).trim() ? `<p>${bidi(b.intent)}</p>` : ""}
 ${themes.map((t) => `<h3>${bidi(t.title ?? "")}</h3><p>${bidi(t.explanation ?? "")}</p>`).join("\n")}
 ${terms.length ? `<h3>${h3}</h3><dl>${terms.map((g) => `<dt>${bidi(g.term)}</dt><dd>${bidi(g.explanation ?? "")}</dd>`).join("")}</dl>` : ""}
 </section>`;
@@ -139,14 +152,14 @@ ${terms.length ? `<h3>${h3}</h3><dl>${terms.map((g) => `<dt>${bidi(g.term)}</dt>
  */
 /** Whole-slide figure block; caption RTL when Hebrew. */
 export function renderFigure(f: Figure): string {
-  const he = /[\u0590-\u05FF]/.test(f.caption);
+  const he = /[\u0590-\u05FF]/.test(str(f.caption));
   const label = `${he ? "שקף" : "slide"} ${f.page}${f.deck ? ` · ${f.deck}` : ""}`;
   return `<figure class="fig"><img src="${f.src}" alt="${esc(label)}"><figcaption dir="${he ? "rtl" : "ltr"}">${f.caption ? bidi(f.caption) + " " : ""}<bdi class="cite-inline" dir="ltr">[${esc(label)}]</bdi></figcaption></figure>`;
 }
 
 export function renderStudyHtml(s: LectureSummary, figures: Figure[] = []): string {
   const ok = figures.filter((f) => /^data:image\/[a-z]+;base64,[A-Za-z0-9+/=]{4,}/.test(f.src ?? ""));
-  const figs = (i: number) => ok.filter((f) => f.section === i || (i === s.sections.length - 1 && (f.section < 0 || f.section >= s.sections.length))).map(renderFigure).join("");
+  const figs = (i: number) => ok.filter((f) => f.section === i || (i === arr(s.sections).length - 1 && (f.section < 0 || f.section >= arr(s.sections).length))).map(renderFigure).join("");
   return `<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>${esc(s.title)}</title>
 <style>
 @page{size:A4;margin:18mm}body{font-family:"IBM Plex Sans Hebrew","Noto Sans Hebrew","Heebo",Arial,sans-serif;line-height:1.5}p,ul,dl{margin:.35em 0}li{margin:.15em 0}dd{margin:0 0 .3em;margin-inline-start:1em}h2{margin:.9em 0 .3em}h3{margin:.6em 0 .2em}
@@ -154,9 +167,9 @@ bdi{unicode-bidi:isolate;font-family:"Noto Sans","Inter",Arial,sans-serif}.cite{
 dt{font-weight:bold}h1,h2{line-height:1.3}ul{padding-inline-start:1.2em}.cite{direction:ltr;unicode-bidi:isolate}
 .math,.katex,.katex-display{unicode-bidi:isolate;direction:ltr}bdi.math{display:inline-block}div.math{display:block}.cite-inline{unicode-bidi:isolate;direction:ltr;white-space:nowrap;color:#666;font-size:.85em}div.math{text-align:center;margin:.4em 0}.big-picture[dir=rtl]{direction:rtl;text-align:right}.big-picture[dir=ltr]{direction:ltr;text-align:left}.big-picture{border-top:2px solid #ccc;margin-top:2em;padding-top:.5em;page-break-before:auto}.katex{font-size:1.05em}.fig{margin:.5em auto;text-align:center;break-inside:avoid;page-break-inside:avoid}.fig img{display:block;margin:0 auto;max-width:100%;max-height:80mm;object-fit:contain;border:1px solid #ddd}.fig figcaption{font-size:.85em;color:#444;margin-top:.3em}.fig figcaption[dir=rtl]{direction:rtl}.katex{font-size:1.05em}
 </style></head><body>
-<h1>${bidi(s.title)}</h1>${s.transcript_thin ? `<p class="cite" style="direction:rtl">שימו לב: התמלול של ההקלטה קצר/חסר ביחס לשקפים — חלק מהסיכום מבוסס על השקפים בלבד.</p>` : ""}<p>${bidi(s.overview)}</p>
-${s.sections.map((x, i) => `<h2>${bidi(x.heading)}</h2><ul>${x.bullets.map((b) => `<li>${bidi(b)}</li>`).join("")}</ul>${x.citation ? `<p class="cite" dir="ltr"><bdi dir="ltr">${esc(unent(x.citation))}</bdi></p>` : ""}${figs(i)}`).join("\n")}
-<h2>מילון מונחים</h2><dl>${s.glossary.map((g) => `<dt>${bidi(g.term)}</dt><dd>${bidi(g.explanation)}</dd>`).join("")}</dl>
+<h1>${bidi(s.title)}</h1>${s.transcript_thin ? `<p class="cite" style="direction:rtl">שימו לב: התמלול של ההקלטה קצר/חסר ביחס לשקפים — חלק מהסיכום מבוסס על השקפים בלבד.</p>` : ""}${arr(s.overview).map((o) => `<p>${bidi(o)}</p>`).join("")}
+${arr<any>(s.sections).map((x, i) => `<h2>${bidi(x.heading)}</h2><ul>${arr(x.bullets).map((b) => `<li>${bidi(b)}</li>`).join("")}</ul>${x.citation ? `<p class="cite" dir="ltr"><bdi dir="ltr">${esc(unent(x.citation))}</bdi></p>` : ""}${figs(i)}`).join("\n")}
+<h2>מילון מונחים</h2><dl>${arr<any>(s.glossary).map((g) => `<dt>${bidi(g.term)}</dt><dd>${bidi(g.explanation)}</dd>`).join("")}</dl>
 ${renderBigPicture(s.big_picture)}
 </body></html>`;
 }
