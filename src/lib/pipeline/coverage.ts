@@ -73,11 +73,38 @@ export function mergeGapSections(base: LectureSummary, extra: LectureSummary): L
   return { ...base, sections: sorted.map((y) => y.x), glossary: [...(base.glossary ?? []), ...(extra.glossary ?? []).filter((g) => !(base.glossary ?? []).some((h) => h.term === g.term))] };
 }
 
-/** ASR end vs uploaded audio duration. */
+/** Time intervals actually spoken-covered by a transcript (segments merged across pauses < tolSec). */
+export function spokenIntervals(t: Transcript | undefined, tolSec = 90): [number, number][] {
+  const iv = [...(t?.segments ?? [])].map((x) => [x.start, Math.max(x.start, x.end)] as [number, number]).sort((a, b) => a[0] - b[0]);
+  const out: [number, number][] = [];
+  for (const r of iv) { const l = out[out.length - 1]; if (l && r[0] <= l[1] + tolSec) l[1] = Math.max(l[1], r[1]); else out.push([...r]); }
+  return out;
+}
+
+/**
+ * Merge segments from older transcripts of the same lecture (e.g. the job that ran before "Record another", whose raw
+ * audio was already deleted) into `base`, only where `base` has no speech. `extras` newest first. Sorted by time.
+ */
+export function mergeTranscripts(base: Transcript, extras: (Transcript | undefined)[]): { t: Transcript; added: number } {
+  const segs = [...base.segments];
+  let added = 0;
+  for (const e of extras) {
+    if (!e?.segments?.length) continue;
+    const have = spokenIntervals({ ...base, segments: segs }, 30);
+    const inside = (m: number) => have.some(([a, b]) => m >= a && m <= b);
+    const add = e.segments.filter((x) => !inside((x.start + x.end) / 2));
+    segs.push(...add); added += add.length;
+  }
+  segs.sort((a, b) => a.start - b.start);
+  return { t: { ...base, segments: segs }, added };
+}
+
+/** ASR speech coverage vs uploaded audio duration (catches missing start/middle too, not only a short end). */
 export function asrCompleteness(t: Transcript | undefined, uploadedSec: number) {
   const end = asrSpan(t)?.[1] ?? 0;
-  const ratio = uploadedSec > 0 ? end / uploadedSec : 1;
-  return { asrEndSec: Math.round(end), uploadedSec: Math.round(uploadedSec), ratio: Math.round(ratio * 1000) / 1000, incomplete: uploadedSec > 0 && ratio < ASR_MIN_RATIO };
+  const spoken = spokenIntervals(t, 180).reduce((n, [a, b]) => n + b - a, 0);
+  const ratio = uploadedSec > 0 ? Math.min(end, spoken + 180) / uploadedSec : 1;
+  return { asrEndSec: Math.round(end), spokenSec: Math.round(spoken), uploadedSec: Math.round(uploadedSec), ratio: Math.round(ratio * 1000) / 1000, incomplete: uploadedSec > 0 && ratio < ASR_MIN_RATIO };
 }
 
 export const fmtWin = ([a, b]: [number, number]) => `${clock(a)}-${clock(b)}`;

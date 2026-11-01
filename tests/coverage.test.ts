@@ -33,3 +33,15 @@ test("gap sections merge in time order", () => {
   const m = mergeGapSections(sum(["t=50:00"]), { ...sum(["t=10:00"]), sections: [{ heading: "new", bullets: ["b [t=10:00]"] }] });
   assert.deepEqual(m.sections.map((s) => s.bullets[0]), ["b [t=10:00]", "b [t=50:00]"]);
 });
+
+test("mergeTranscripts fills earlier recording session from sibling job; completeness catches leading gap", async () => {
+  const { mergeTranscripts, asrCompleteness } = await import("../src/lib/pipeline/coverage");
+  const seg = (s: number) => ({ start: s, end: s + 20, text: "x" + s });
+  const late = { language: "he", segments: Array.from({ length: 90 }, (_, i) => seg(6110 + i * 20)) };
+  const early = { language: "he", segments: Array.from({ length: 300 }, (_, i) => seg(i * 20)) };
+  assert.equal(asrCompleteness(late, 7984).incomplete, true);
+  const m = mergeTranscripts(late, [early]);
+  assert.equal(m.added, 300);
+  assert.equal(m.t.segments[0].start, 0);
+  assert.equal(mergeTranscripts(m.t, [early]).added, 0);
+});

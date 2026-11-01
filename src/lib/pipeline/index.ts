@@ -1,5 +1,5 @@
-import { asrCompleteness, computeCoverage, fixBackwardRanges, fmtWin, mergeGapSections, sliceTranscript, type Coverage } from "./coverage";
-import { asc, eq } from "drizzle-orm";
+import { asrCompleteness, computeCoverage, mergeTranscripts, fixBackwardRanges, fmtWin, mergeGapSections, sliceTranscript, type Coverage } from "./coverage";
+import { and, asc, desc, eq, ne } from "drizzle-orm";
 import { db, ensureDb, schema } from "@/db";
 import { STAGES, type Stage } from "@/db/schema";
 import { retrieveExcerpts } from "../context";
@@ -111,6 +111,23 @@ export async function resummarizeJob(jobId: string, force = false): Promise<Retr
 /**
  * Re-run repair+summary+pdf from the existing ASR (no ASR quota spent) — picks up improved repair/spelling prompts.
  */
+
+/**
+ * A lecture recorded in several sessions ("Record another") gets a new job per /process; by then the earlier parts'
+ * raw audio was deleted on the previous job's completion, so the new job only transcribes the new parts. Pull the
+ * missing stretches from the lecture's other jobs' transcripts so the summary covers the whole timeline.
+ */
+async function withSiblingAsr(lectureId: string, jobId: string, a: Artifacts) {
+  if (a.slidesOnly || !a.asr) return;
+  const rows = await db.select().from(schema.jobs).where(and(eq(schema.jobs.lectureId, lectureId), ne(schema.jobs.id, jobId))).orderBy(desc(schema.jobs.updatedAt));
+  const extras = rows.map((r) => { try { const x = JSON.parse(r.artifacts) as Artifacts; return x.asrComplete ? x.asr : undefined; } catch { return undefined; } });
+  const m = mergeTranscripts(a.asr, extras);
+  if (!m.added) return;
+  console.warn(`merged ${m.added} ASR segments from earlier jobs of lecture ${lectureId}`);
+  a.asr = m.t;
+  if (a.asrRaw) a.asrRaw = mergeTranscripts(a.asrRaw, extras).t;
+}
+
 export async function rerepairJob(jobId: string, force = false): Promise<RetryResult> {
   await ensureDb();
   const job = await db.query.jobs.findFirst({ where: eq(schema.jobs.id, jobId) });
@@ -121,6 +138,9 @@ export async function rerepairJob(jobId: string, force = false): Promise<RetryRe
   const incomplete = !!a.asrComplete && (!a.summary || !a.pdf) && a.progressDetail?.stage !== job.stage; // honest in-flight work still needs stuck/force
   if (!a.asrComplete || (job.stage !== "done" && job.stage !== "failed" && !stuck && !force && !incomplete)) return { ok: false, reason: "not_retryable", job };
   delete a.repair; delete a.repaired; delete a.summary; delete a.html; delete a.pdf;
+  await withSiblingAsr(job.lectureId, jobId, a);
+  { const segRows = await db.select().from(schema.segments).where(eq(schema.segments.lectureId, job.lectureId));
+    a.asrCheck = asrCompleteness(a.asr, segRows.reduce((n, r) => n + (r.duration ?? 0), 0)); a.asrIncomplete = a.asrCheck.incomplete || undefined; }
   const stage = resumeStage(a);
   a.progressDetail = { stage, label: stageLabel(stage) }; // never leave a stale "Done" behind
   const [row] = await db.update(schema.jobs).set({ stage, error: null, artifacts: JSON.stringify(a), updatedAt: Date.now() })
@@ -264,6 +284,7 @@ export async function advanceJob(jobId: string) {
           }
         } else {
           a.asrComplete = true;
+          await withSiblingAsr(lecture.id, jobId, a);
           const segRows = await db.select().from(schema.segments).where(eq(schema.segments.lectureId, lecture.id));
           a.asrCheck = asrCompleteness(a.asr, segRows.reduce((n, r) => n + (r.duration ?? 0), 0));
           a.asrIncomplete = a.asrCheck.incomplete || undefined;
