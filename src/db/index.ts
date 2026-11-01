@@ -48,6 +48,13 @@ export function ensureDb() {
       `CREATE INDEX IF NOT EXISTS course_files_course ON course_files(course_id)`,
       `CREATE TABLE IF NOT EXISTS model_cooldowns (model TEXT PRIMARY KEY, exhausted_until INTEGER NOT NULL, reason TEXT, updated_at INTEGER NOT NULL)`,
     ], "write");
+    // Per-device ownership (2026-11): idempotent column add for existing DBs.
+    const cols = await client.execute(`PRAGMA table_info(courses)`);
+    if (!cols.rows.some((r) => r.name === "device_id")) {
+      try { await client.execute(`ALTER TABLE courses ADD COLUMN device_id TEXT`); }
+      catch (e) { if (!/duplicate column/i.test((e as Error).message)) throw e; }
+    }
+    await client.execute(`CREATE INDEX IF NOT EXISTS courses_device ON courses(device_id)`);
   })();
   ready.catch(() => { ready = null; });
   return ready;
