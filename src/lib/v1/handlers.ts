@@ -3,7 +3,7 @@
  * Uploads are multipart through the function (local/self-hosted). On Vercel the 4.5 MB body limit applies:
  * use POST /api/upload (Blob client upload) + POST /v1/lectures/{id}/audio/segments with JSON {seq,...,url}.
  */
-import { and, desc, eq, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { db, ensureDb, schema } from "@/db";
 import { pdfToText } from "../context";
@@ -39,23 +39,62 @@ async function fileFrom(fd: FormData, dir: "uploads", prefix: string) {
 
 const lectureOr404 = (lid: string) => db.query.lectures.findFirst({ where: eq(schema.lectures.id, lid) });
 
-export async function createCourse(req: Request) {
+/** Ownership predicate on courses for a device (null = legacy client → unclaimed courses only). */
+export const ownedBy = (dev: string | null): SQL => (dev === null ? isNull(schema.courses.deviceId) : eq(schema.courses.deviceId, dev)) as SQL;
+
+export async function ownsCourse(dev: string | null, cid: string) {
+  return !!(await db.query.courses.findFirst({ columns: { id: true }, where: and(eq(schema.courses.id, cid), ownedBy(dev)) }));
+}
+export async function ownsLecture(dev: string | null, lid: string) {
+  const r = await db.select({ id: schema.lectures.id }).from(schema.lectures).innerJoin(schema.courses, eq(schema.courses.id, schema.lectures.courseId))
+    .where(and(eq(schema.lectures.id, lid), ownedBy(dev))).limit(1);
+  return r.length > 0;
+}
+export async function ownsJob(dev: string | null, jid: string) {
+  const r = await db.select({ id: schema.jobs.id }).from(schema.jobs).innerJoin(schema.lectures, eq(schema.lectures.id, schema.jobs.lectureId))
+    .innerJoin(schema.courses, eq(schema.courses.id, schema.lectures.courseId)).where(and(eq(schema.jobs.id, jid), ownedBy(dev))).limit(1);
+  return r.length > 0;
+}
+
+/**
+ * POST /v1/devices/claim {claim_course_ids:[...]} — attach UNCLAIMED legacy courses whose ids the client already knows
+ * to this device. Never steals a course owned by another device; never bulk-claims unknown ids.
+ */
+export async function claimCourses(req: Request, dev: string | null) {
+  if (dev === null) return bad("X-Device-Id required");
+  const p = z.object({ claim_course_ids: z.array(z.string().min(1)).max(500).default([]) }).safeParse(await req.json().catch(() => ({})));
+  if (!p.success) return bad(p.error.message);
+  const ids = [...new Set(p.data.claim_course_ids)];
+  const claimed: string[] = [], skipped: { course_id: string; reason: string }[] = [];
+  for (const cid of ids) {
+    const c = await db.query.courses.findFirst({ columns: { id: true, deviceId: true }, where: eq(schema.courses.id, cid) });
+    if (!c) { skipped.push({ course_id: cid, reason: "not_found" }); continue; }
+    if (c.deviceId === dev) { claimed.push(cid); continue; } // idempotent
+    if (c.deviceId) { skipped.push({ course_id: cid, reason: "not_found" }); continue; } // don't leak other devices' ids
+    await db.update(schema.courses).set({ deviceId: dev }).where(and(eq(schema.courses.id, cid), isNull(schema.courses.deviceId)));
+    const after = await db.query.courses.findFirst({ columns: { deviceId: true }, where: eq(schema.courses.id, cid) });
+    if (after?.deviceId === dev) claimed.push(cid); else skipped.push({ course_id: cid, reason: "not_found" });
+  }
+  return j({ device_id: dev, claimed, skipped });
+}
+
+export async function createCourse(req: Request, dev: string | null = null) {
   const p = z.object({ name: z.string().min(1), lang_primary: z.string().default("he") }).safeParse(await req.json().catch(() => null));
   if (!p.success) return bad(p.error.message);
   const course_id = id();
-  await db.insert(schema.courses).values({ id: course_id, name: p.data.name, langPrimary: p.data.lang_primary, createdAt: Date.now() });
+  await db.insert(schema.courses).values({ id: course_id, name: p.data.name, langPrimary: p.data.lang_primary, createdAt: Date.now(), deviceId: dev });
   return j({ course_id, name: p.data.name }, 201);
 }
 
-export async function listCourses() {
-  const rows = await db.select({ course_id: schema.courses.id, name: schema.courses.name, has_context: schema.courses.contextPdfUrl }).from(schema.courses);
+export async function listCourses(dev: string | null = null) {
+  const rows = await db.select({ course_id: schema.courses.id, name: schema.courses.name, has_context: schema.courses.contextPdfUrl }).from(schema.courses).where(ownedBy(dev));
   return j(rows.map((r) => ({ ...r, has_context: !!r.has_context })));
 }
 
-export async function createLecture(req: Request) {
+export async function createLecture(req: Request, dev: string | null = null) {
   const p = z.object({ course_id: z.string(), title: z.string().min(1), recorded_at: z.string().optional() }).safeParse(await req.json().catch(() => null));
   if (!p.success) return bad(p.error.message);
-  if (!(await db.query.courses.findFirst({ where: eq(schema.courses.id, p.data.course_id) }))) return notFound();
+  if (!(await ownsCourse(dev, p.data.course_id))) return notFound();
   const lecture_id = id();
   await db.insert(schema.lectures).values({ id: lecture_id, courseId: p.data.course_id, title: p.data.title, recordedAt: p.data.recorded_at, createdAt: Date.now() });
   return j({ lecture_id }, 201);
@@ -302,10 +341,11 @@ export async function postRetry(req: Request, jid: string) {
 }
 
 /** GET /v1/jobs — 20 most recent jobs, for debugging without the phone's job id. */
-export async function listJobs() {
+export async function listJobs(dev: string | null = null) {
   const rows = await db.select({ job_id: schema.jobs.id, lecture_id: schema.jobs.lectureId, stage: schema.jobs.stage, error: schema.jobs.error,
     updated_at: schema.jobs.updatedAt, title: schema.lectures.title })
-    .from(schema.jobs).leftJoin(schema.lectures, eq(schema.lectures.id, schema.jobs.lectureId))
+    .from(schema.jobs).innerJoin(schema.lectures, eq(schema.lectures.id, schema.jobs.lectureId))
+    .innerJoin(schema.courses, eq(schema.courses.id, schema.lectures.courseId)).where(ownedBy(dev))
     .orderBy(desc(schema.jobs.updatedAt)).limit(20);
   return j(rows.map((r) => ({ ...r, state: r.stage === "done" || r.stage === "failed" || r.stage === "queued" ? r.stage : "running",
     updated_at: new Date(r.updated_at).toISOString() })));

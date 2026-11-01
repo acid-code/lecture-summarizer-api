@@ -1,4 +1,4 @@
-import { checkAuth } from "@/lib/auth";
+import { authenticate } from "@/lib/auth";
 import { notFound } from "@/lib/http";
 import { getProvider } from "@/lib/providers";
 
@@ -11,7 +11,8 @@ async function route(req: Request, { params }: Ctx) {
   const m = req.method;
   if (m === "GET" && p.join("/") === "health")
     return Response.json({ ok: true, provider: getProvider().name, blob: !!process.env.BLOB_READ_WRITE_TOKEN, commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null, figures: process.env.FIGURES ?? "on" });
-  const denied = checkAuth(req); if (denied) return denied;
+  const auth = authenticate(req); if (auth instanceof Response) return auth;
+  const dev = auth.deviceId;
   // Load handlers/db only after health so /v1/health never initializes the DB.
   const h = await import("@/lib/v1/handlers");
   try { await h.ensureDb(); } catch (e) {
@@ -23,7 +24,14 @@ async function route(req: Request, { params }: Ctx) {
     return Response.json({ exhausted: await cooldowns() });
   }
   try {
-    if (a === "courses" && !b) return m === "POST" ? h.createCourse(req) : h.listCourses();
+    if (a === "devices" && b === "claim" && !c && m === "POST") return h.claimCourses(req, dev);
+    if (a === "devices" && b === "me" && !c && m === "GET") return Response.json({ device_id: dev });
+    // Ownership gate: anything addressed by id must belong to this device (else 404, never 403).
+    // Covers every GET/POST/DELETE under /courses/{id}, /lectures/{id}, /jobs/{id} (files, segments, markers, process, retry, ...).
+    if (a === "courses" && b && !(await h.ownsCourse(dev, b))) return notFound();
+    if (a === "lectures" && b && !(await h.ownsLecture(dev, b))) return notFound();
+    if (a === "jobs" && b && !(await h.ownsJob(dev, b))) return notFound();
+    if (a === "courses" && !b) return m === "POST" ? h.createCourse(req, dev) : h.listCourses(dev);
     if (a === "courses" && b && !c && m === "DELETE") return h.deleteCourse(b);
     if (a === "courses" && b && c === "context" && m === "POST") return h.uploadContext(req, b);
     if (a === "courses" && b && c === "files") {
@@ -32,7 +40,7 @@ async function route(req: Request, { params }: Ctx) {
       if (m === "DELETE") return h.deleteCourseFile(b, d);
     }
     if (a === "uploads" && !b && m === "POST") return h.createUpload(req);
-    if (a === "lectures" && !b && m === "POST") return h.createLecture(req);
+    if (a === "lectures" && !b && m === "POST") return h.createLecture(req, dev);
     if (a === "lectures" && b) {
       if (!c && m === "GET") return h.getLecture(b);
       if (!c && m === "DELETE") return h.deleteLecture(b);
@@ -55,7 +63,7 @@ async function route(req: Request, { params }: Ctx) {
       if (m === "GET" && c === "summary.html") return h.summaryFile(b, "html");
       if (m === "GET" && c === "summary.json") return h.summaryFile(b, "json");
     }
-    if (a === "jobs" && !b && m === "GET") return h.listJobs();
+    if (a === "jobs" && !b && m === "GET") return h.listJobs(dev);
     if (a === "jobs" && b) {
       if (!c && m === "DELETE") return h.deleteJob(b);
       if (!c && m === "GET") return h.getJob(b, process.env.AUTO_ADVANCE_ON_POLL !== "false" && new URL(req.url).searchParams.get("advance") !== "0");
