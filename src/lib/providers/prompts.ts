@@ -166,6 +166,8 @@ per slide/page, slides separated by form-feeds or "=== file ===" headers). Slide
 - Do not invent topics that are not in the materials; course-pack excerpts are background for terminology/definitions only.
 - Cite slides as [slide N] (or [slide N-M]) at the end of bullets and in each section's "citation". Never use [t=…] times.
 - Set "transcript_thin": false (there is intentionally no transcript).
+- Be thorough: cover every slide topic (one section per topic group, 4-10 bullets each, 1-3 dense sentences per bullet), keep
+  all specific numbers/examples/definitions from the slides, mark slides' emphasised/boxed/"important" items with a leading "חשוב: ".
 Slides / materials:
 ${slides.slice(0, 60000) || "(none)"}
 Course-pack excerpts: ${ctx.courseExcerpts?.(slides.slice(0, 4000), 6000) || "(none)"}
@@ -186,6 +188,36 @@ export function slidesForSummary(slides?: string | null, head = 10000, tail = 50
   return slides.slice(0, head) + `\n…(middle slides omitted)…\nFINAL SLIDES (end of deck, closing summary):\n` + slides.slice(-tail);
 }
 
+/** Target density scaled by spoken length so long lectures get proportionally more sections/bullets (not padding). */
+export function depthTargets(t: Transcript) {
+  const segs = t.segments ?? [];
+  const minutes = segs.length ? Math.max(1, (segs[segs.length - 1].end - segs[0].start) / 60) : 0;
+  const sections = Math.min(24, Math.max(4, Math.round(minutes / 5)));
+  return { minutes: Math.round(minutes), sections, bulletsLo: 5, bulletsHi: 12 };
+}
+
+/** Coverage + professor-emphasis rules: summaries were too short and dropped distinct subjects / specific details. */
+export function depthBlock(t: Transcript) {
+  const d = depthTargets(t);
+  return `DEPTH & COVERAGE (the previous summaries were TOO SHORT and dropped topics — fix that):
+- Cover EVERY distinct subject, sub-topic, example and digression the lecturer spent real time on, in spoken order. A topic
+  change in the transcript = its own section (or sub-group of bullets); never merge unrelated topics to save space.
+- Target for this ~${d.minutes}-minute lecture: about ${d.sections} sections (more if the lecture changes subject often), each with
+  ${d.bulletsLo}-${d.bulletsHi} bullets. Each bullet is 1-3 full, information-dense sentences — explanation + the specific detail, not a headline.
+- Keep the SPECIFICS the lecturer gave: exact numbers, values, units, thresholds, named examples, experiments, names, dates,
+  step-by-step procedures, formula derivations, comparisons ("X vs Y"), exceptions and edge cases. Prefer the concrete detail over a generic paraphrase.
+- PROFESSOR'S KEY NOTES — scan the transcript for what the lecturer stressed and never drop it: phrases like "חשוב", "שימו לב",
+  "זה יהיה במבחן"/"למבחן", "תזכרו", "הנקודה המרכזית", "טעות נפוצה", "important", "note that", "key point", repetition of the
+  same idea, slowing down to define something, explicit definitions, caveats/warnings, common mistakes, and hints about
+  exams/homework. Start these bullets with "חשוב: " and keep the lecturer's specific wording/detail. Also add a section
+  titled "דגשים חשובים של המרצה" (placed right after the spoken sections, before "סיכום מהמצגת") that lists 5-15 of the most
+  important such notes, each cited [t=…]. Exam/homework hints go first.
+- Definitions said aloud go both in the relevant bullet AND in the glossary (glossary: every technical term defined or used centrally; aim 8-25 entries).
+- "overview": 4-6 sentences listing the main subjects in order.
+- Not rambling: no filler, no repeating the same point in two sections, no generic textbook material the lecturer did not say.
+  Length should come from more covered content and specifics, never from wordiness.`;
+}
+
 export function summaryPrompt(t: Transcript, repairs: Repair[], ctx: LectureContext) {
   if (ctx.slidesOnly) return slidesOnlyPrompt(ctx);
   const text = t.segments.map((s) => s.text).join(" ");
@@ -202,7 +234,7 @@ SOURCE PRIORITY (strict) — the VOICE/transcript leads, slides only support it:
    points into the matching spoken sections (cite [slide N], or [t=…, slide N] when also spoken), and ALWAYS add one final
    section titled "סיכום מהמצגת" (from the slides) built from the deck's CLOSING / summary / conclusion / take-home slides
    (usually the last few slides, shown in full below under "FINAL SLIDES") — include their points even if they were only
-   lightly spoken or not spoken at all, each cited [slide N] (+ [t=…] when spoken). Keep it concise (about 3-8 bullets);
+   lightly spoken or not spoken at all, each cited [slide N] (+ [t=…] when spoken). Keep it focused (about 3-10 bullets);
    do not turn the whole slide outline into sections.
 3. BACKGROUND = course-pack excerpts — terminology/definitions only; never add topics not covered in this lecture.
 CITATIONS (mixed, required):
@@ -213,6 +245,7 @@ CITATIONS (mixed, required):
 ${thin ? `WARNING: the transcript is empty or very short relative to the slides. Say so explicitly at the start of the
 overview (in Hebrew: the recording/transcript covers only a small part of the lecture), summarize what the transcript does
 contain with [t=…] cites, mark the rest as slide-only with [slide N], and set "transcript_thin": true.` : `Set "transcript_thin": false.`}
+${depthBlock(t)}
 PRIMARY SOURCE — transcript (lecture time M:SS):
 ${fmtTimed(t) || "(empty)"}
 Term repairs already applied: ${JSON.stringify(repairs)}
