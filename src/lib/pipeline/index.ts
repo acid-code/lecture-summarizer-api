@@ -8,12 +8,12 @@ import { applyRepairs, isTranscriptThin, cleanTranscript } from "../providers/pr
 import { dedupeTranscript } from "../providers/dedupe";
 import { deleteFileUrl, saveArtifact } from "../storage";
 import { renderStudyHtml } from "./render";
-import { figuresEnabled, pickFigures, type SlideDeck } from "../figures";
+import { figuresEnabled, pickFigures, lastFigureNote, type SlideDeck } from "../figures";
 import { readFileUrl } from "../storage";
 
 export interface Artifacts {
   asr?: Transcript; /** ASR before dedupe (append-only), so later dedupe changes can be re-applied from it */ asrRaw?: Transcript; asrParts?: number; /** next ASR window start (s) inside the current part */ asrWindowStart?: number; asrComplete?: boolean; repair?: Repair[]; repaired?: Transcript;
-  summary?: LectureSummary; /** figures embedded in the PDF (metadata only) */ figures?: { page: number; deck?: string; section: number; caption: string }[]; html?: string; pdf?: string; audioDeleted?: boolean;
+  summary?: LectureSummary; /** figures embedded in the PDF (metadata only) */ figures?: { page: number; deck?: string; section: number; caption: string }[]; figuresNote?: string; html?: string; pdf?: string; audioDeleted?: boolean;
   /** No audio on the server: summary built from lecture slides/PDFs (or course files) only; ASR+repair skipped. */
   slidesOnly?: boolean;
   /** Detail about the next/current unit of work, for client progress text. */
@@ -252,7 +252,7 @@ export async function advanceJob(jobId: string) {
       }
       case "pdf": {
         const figures = figuresEnabled() ? await pickFigures(await slideDecks(lecture), a.summary!) : [];
-        a.figures = figures.map(({ src: _src, ...f }) => f);
+        a.figures = figures.map(({ src: _src, ...f }) => f); a.figuresNote = figuresEnabled() ? lastFigureNote : "FIGURES=off";
         const html = renderStudyHtml(a.summary!, figures);
         a.html = await saveArtifact(`${lecture.id}-study.html`, html, "text/html; charset=utf-8");
         const pdf = await htmlToPdf(html).catch((e) => { console.warn("pdf render failed, HTML only:", e); return null; });

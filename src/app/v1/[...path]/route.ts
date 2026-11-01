@@ -10,7 +10,7 @@ async function route(req: Request, { params }: Ctx) {
   const p = (await params).path;
   const m = req.method;
   if (m === "GET" && p.join("/") === "health")
-    return Response.json({ ok: true, provider: getProvider().name, blob: !!process.env.BLOB_READ_WRITE_TOKEN });
+    return Response.json({ ok: true, provider: getProvider().name, blob: !!process.env.BLOB_READ_WRITE_TOKEN, commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null, figures: process.env.FIGURES ?? "on" });
   const denied = checkAuth(req); if (denied) return denied;
   // Load handlers/db only after health so /v1/health never initializes the DB.
   const h = await import("@/lib/v1/handlers");

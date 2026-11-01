@@ -348,7 +348,7 @@ async function latestDone(lid: string) {
 export async function summaryFile(lid: string, kind: "pdf" | "html" | "json") {
   const job = await latestDone(lid); if (!job) return j({ error: "no finished job" }, 404);
   const a = JSON.parse(job.artifacts) as Artifacts;
-  if (kind === "json") return j({ summary: a.summary, repairs: a.repair, transcript: a.repaired ?? a.asr });
+  if (kind === "json") return j({ summary: a.summary, repairs: a.repair, transcript: a.repaired ?? a.asr, figures: a.figures ?? null, figures_note: a.figuresNote ?? null });
   const url = kind === "pdf" ? a.pdf : a.html;
   if (!url) return notFound();
   const isPdf = kind === "pdf" && !url.endsWith(".html");
