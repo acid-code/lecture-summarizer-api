@@ -13,6 +13,7 @@
   "dependencies": {
     "@google/genai": "^2.31.0",
     "@libsql/client": "^0.18.0",
+    "@napi-rs/canvas": "^0.1.100",
     "@sparticuz/chromium": "^153.0.0",
     "@vercel/blob": "^2.8.2",
     "drizzle-orm": "^0.45.4",

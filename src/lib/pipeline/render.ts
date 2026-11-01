@@ -1,5 +1,6 @@
 import katex from "katex";
 import type { LectureSummary } from "../providers/types";
+import type { Figure } from "../figures";
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 /** Models sometimes emit HTML entities themselves (`&gt;`); decode first so we never double-escape. */
@@ -129,16 +130,24 @@ ${terms.length ? `<h3>${h3}</h3><dl>${terms.map((g) => `<dt>${bidi(g.term)}</dt>
  * Print-ready RTL HTML for the study PDF (rendered to PDF by src/lib/pdf.ts when Chrome is available).
  * PDF: src/lib/pdf.ts inlines the IBM Plex Sans Hebrew + KaTeX fonts and renders with Chromium (system or @sparticuz).
  */
-export function renderStudyHtml(s: LectureSummary): string {
+/** Whole-slide figure block; caption RTL when Hebrew. */
+export function renderFigure(f: Figure): string {
+  const he = /[\u0590-\u05FF]/.test(f.caption);
+  const label = `${he ? "שקף" : "slide"} ${f.page}${f.deck ? ` · ${f.deck}` : ""}`;
+  return `<figure class="fig"><img src="${f.src}" alt="${esc(label)}"><figcaption dir="${he ? "rtl" : "ltr"}">${f.caption ? bidi(f.caption) + " " : ""}<bdi class="cite-inline" dir="ltr">[${esc(label)}]</bdi></figcaption></figure>`;
+}
+
+export function renderStudyHtml(s: LectureSummary, figures: Figure[] = []): string {
+  const figs = (i: number) => figures.filter((f) => f.section === i || (i === s.sections.length - 1 && (f.section < 0 || f.section >= s.sections.length))).map(renderFigure).join("");
   return `<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>${esc(s.title)}</title>
 <style>
 @page{size:A4;margin:18mm}body{font-family:"IBM Plex Sans Hebrew","Noto Sans Hebrew","Heebo",Arial,sans-serif;line-height:1.6}
 bdi{unicode-bidi:isolate;font-family:"Noto Sans","Inter",Arial,sans-serif}.cite{color:#666;font-size:.85em}
 dt{font-weight:bold}h1,h2{line-height:1.3}ul{padding-inline-start:1.2em}.cite{direction:ltr;unicode-bidi:isolate}
-.math,.katex,.katex-display{unicode-bidi:isolate;direction:ltr}bdi.math{display:inline-block}div.math{display:block}.cite-inline{unicode-bidi:isolate;direction:ltr;white-space:nowrap;color:#666;font-size:.85em}div.math{text-align:center;margin:.4em 0}.big-picture[dir=rtl]{direction:rtl;text-align:right}.big-picture[dir=ltr]{direction:ltr;text-align:left}.big-picture{border-top:2px solid #ccc;margin-top:2em;padding-top:.5em;page-break-before:auto}.katex{font-size:1.05em}
+.math,.katex,.katex-display{unicode-bidi:isolate;direction:ltr}bdi.math{display:inline-block}div.math{display:block}.cite-inline{unicode-bidi:isolate;direction:ltr;white-space:nowrap;color:#666;font-size:.85em}div.math{text-align:center;margin:.4em 0}.big-picture[dir=rtl]{direction:rtl;text-align:right}.big-picture[dir=ltr]{direction:ltr;text-align:left}.big-picture{border-top:2px solid #ccc;margin-top:2em;padding-top:.5em;page-break-before:auto}.katex{font-size:1.05em}.fig{margin:.8em auto;text-align:center;break-inside:avoid;page-break-inside:avoid}.fig img{max-width:100%;max-height:110mm;border:1px solid #ddd}.fig figcaption{font-size:.85em;color:#444;margin-top:.3em}.fig figcaption[dir=rtl]{direction:rtl}.katex{font-size:1.05em}
 </style></head><body>
 <h1>${bidi(s.title)}</h1>${s.transcript_thin ? `<p class="cite" style="direction:rtl">⚠ התמלול של ההקלטה קצר/חסר ביחס לשקפים — חלק מהסיכום מבוסס על השקפים בלבד.</p>` : ""}<p>${bidi(s.overview)}</p>
-${s.sections.map((x) => `<h2>${bidi(x.heading)}</h2><ul>${x.bullets.map((b) => `<li>${bidi(b)}</li>`).join("")}</ul>${x.citation ? `<p class="cite" dir="ltr"><bdi dir="ltr">${esc(unent(x.citation))}</bdi></p>` : ""}`).join("\n")}
+${s.sections.map((x, i) => `<h2>${bidi(x.heading)}</h2><ul>${x.bullets.map((b) => `<li>${bidi(b)}</li>`).join("")}</ul>${x.citation ? `<p class="cite" dir="ltr"><bdi dir="ltr">${esc(unent(x.citation))}</bdi></p>` : ""}${figs(i)}`).join("\n")}
 <h2>מילון מונחים</h2><dl>${s.glossary.map((g) => `<dt>${bidi(g.term)}</dt><dd>${bidi(g.explanation)}</dd>`).join("")}</dl>
 ${renderBigPicture(s.big_picture)}
 </body></html>`;

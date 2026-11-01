@@ -157,3 +157,15 @@ prints it into the PDF on Vercel too. Bad TeX shows as red source, never fails t
 ### Re-repair (no ASR quota)
 `POST /v1/jobs/{id}/rerepair[?force=1]` keeps the ASR and re-runs repair (term fixes + a second Hebrew-spelling pass) → summary → PDF.
 `reprocess?fallback=1` without server audio now does the same. Env: `REPAIR_SPELLING_PASS=0` disables pass 2, `REPAIR_CHUNK_SEGMENTS` (default 120).
+
+## Figures in the study PDF
+
+The `pdf` stage (`src/lib/figures/`) embeds important graphs/diagrams from the lecture's slide decks **inline under the matching summary section**:
+
+1. Each PDF deck (PPTX via LibreOffice → PDF when `soffice` exists) is analyzed with unpdf: text length + image/vector paint ops per page. Pages with images/drawings are pre-filtered and capped (`FIGURES_MAX_PAGES`).
+2. Candidates are rendered as whole-slide JPEG thumbnails (~1000 px, q75) with `pdftoppm`, or in-process with unpdf + `@napi-rs/canvas` (serverless).
+3. **Mistral vision** (`MISTRAL_VISION_MODEL`, default `ministral-14b-2512`) picks up to `FIGURES_MAX` figures `{page, section, caption}` in one call. Gemini still writes the text summary.
+4. Fallback without `MISTRAL_API_KEY` / on error: image-heavy, low-text slides, section matched by slide citation or lexical overlap.
+5. `render.ts` places each figure (caption RTL when Hebrew, `[שקף N]`) after its section. Figure metadata is kept in `artifacts.figures`. Failures never fail the job (text-only PDF). `FIGURES=off` disables.
+
+Limits: PPTX figures need LibreOffice (not on Vercel → PPTX decks stay text-only there; PDFs work). ~6 JPEGs add ≈1 MB to the PDF.
