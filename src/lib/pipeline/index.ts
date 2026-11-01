@@ -101,6 +101,7 @@ export async function resummarizeJob(jobId: string, force = false): Promise<Retr
   const incomplete = !!a.asrComplete && (!a.summary || !a.pdf) && a.progressDetail?.stage !== job.stage; // honest in-flight work still needs stuck/force
   if (!a.asrComplete || (job.stage !== "done" && job.stage !== "failed" && !stuck && !force && !incomplete)) return { ok: false, reason: "not_retryable", job };
   delete a.summary; delete a.html; delete a.pdf;
+  await withSiblingAsr(job.lectureId, jobId, a); // always pull earlier sessions' transcripts, even without redoing ASR/repair
   const stage = resumeStage(a);
   a.progressDetail = { stage, label: stageLabel(stage) }; // never leave a stale "Done" behind
   const [row] = await db.update(schema.jobs).set({ stage, error: null, artifacts: JSON.stringify(a), updatedAt: Date.now() })
@@ -118,14 +119,22 @@ export async function resummarizeJob(jobId: string, force = false): Promise<Retr
  * missing stretches from the lecture's other jobs' transcripts so the summary covers the whole timeline.
  */
 async function withSiblingAsr(lectureId: string, jobId: string, a: Artifacts) {
-  if (a.slidesOnly || !a.asr) return;
+  if (a.slidesOnly || !a.asr) return 0;
   const rows = await db.select().from(schema.jobs).where(and(eq(schema.jobs.lectureId, lectureId), ne(schema.jobs.id, jobId))).orderBy(desc(schema.jobs.updatedAt));
-  const extras = rows.map((r) => { try { const x = JSON.parse(r.artifacts) as Artifacts; return x.asrComplete ? x.asr : undefined; } catch { return undefined; } });
-  const m = mergeTranscripts(a.asr, extras);
-  if (!m.added) return;
-  console.warn(`merged ${m.added} ASR segments from earlier jobs of lecture ${lectureId}`);
+  const sib = rows.map((r) => { try { const x = JSON.parse(r.artifacts) as Artifacts; return x.asrComplete && !x.slidesOnly ? x : undefined; } catch { return undefined; } });
+  return mergeSiblingArtifacts(a, sib);
+}
+
+/** Merge sibling jobs' transcripts into asr/asrRaw/repaired (repaired gets the siblings' repaired text when present). */
+export function mergeSiblingArtifacts(a: Artifacts, sib: (Artifacts | undefined)[]): number {
+  if (a.slidesOnly || !a.asr) return 0;
+  const m = mergeTranscripts(a.asr, sib.map((x) => x?.asr));
+  if (!m.added) return 0;
+  console.warn(`merged ${m.added} ASR segments from earlier jobs`);
   a.asr = m.t;
-  if (a.asrRaw) a.asrRaw = mergeTranscripts(a.asrRaw, extras).t;
+  if (a.asrRaw) a.asrRaw = mergeTranscripts(a.asrRaw, sib.map((x) => x?.asrRaw ?? x?.asr)).t;
+  if (a.repaired) a.repaired = mergeTranscripts(a.repaired, sib.map((x) => x?.repaired ?? x?.asr)).t;
+  return m.added;
 }
 
 export async function rerepairJob(jobId: string, force = false): Promise<RetryResult> {

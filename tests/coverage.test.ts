@@ -45,3 +45,13 @@ test("mergeTranscripts fills earlier recording session from sibling job; complet
   assert.equal(m.t.segments[0].start, 0);
   assert.equal(mergeTranscripts(m.t, [early]).added, 0);
 });
+
+test("mergeSiblingArtifacts merges earlier session into asr, asrRaw and repaired (resummarize path)", async () => {
+  const { mergeSiblingArtifacts } = await import("../src/lib/pipeline/index");
+  const seg = (s: number) => ({ start: s, end: s + 20, text: "x" + s });
+  const late = { language: "he", segments: Array.from({ length: 90 }, (_, i) => seg(6110 + i * 20)) };
+  const early = { language: "he", segments: Array.from({ length: 300 }, (_, i) => seg(i * 20)) };
+  const a: any = { asrComplete: true, asr: late, asrRaw: late, repaired: late };
+  assert.equal(mergeSiblingArtifacts(a, [{ asrComplete: true, asr: early, repaired: early } as any, undefined]), 300);
+  for (const k of ["asr", "asrRaw", "repaired"]) assert.equal(a[k].segments[0].start, 0);
+});
