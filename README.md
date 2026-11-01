@@ -100,7 +100,7 @@ Implemented in `src/app/v1/[...path]/route.ts` → `src/lib/v1/handlers.ts`. Mat
 | POST | `/v1/lectures/{id}/context` | multipart `file` (PDF) or JSON `{url}` — stored on the lecture's **course** | `{pages,chars}` | uploadCourseContext ✓ |
 | POST | `/v1/lectures/{id}/audio/segments` | multipart `seq, started_at, duration, file` or JSON `{seq,duration,url,mime}`; idempotent per seq | `{seq}` | uploadSegment ✓ |
 | POST | `/v1/lectures/{id}/markers` | `[{t_sec,page,label}]` | `{count}` | uploadMarkers ✓ |
-| POST | `/v1/lectures/{id}/process` | `{options}` | `{job_id}` (202) | startProcessing ✓ |
+| POST | `/v1/lectures/{id}/process` | `{options}` (`options.live=true`: ASR-while-recording job, reused; a later call without `live` finalizes it) | `{job_id, live}` (202) | startProcessing ✓ |
 | GET | `/v1/jobs/{id}` | – | `{state: queued\|running\|done\|failed, stage, progress 0-100, error, pdf_ready, repairs}` — **runs one stage per poll** (`AUTO_ADVANCE_ON_POLL`, `?advance=0` to just read) | jobStatus ✓ |
 | POST | `/v1/jobs/{id}/advance` | – | same as above; also resumes `failed` jobs | – |
 | POST | `/v1/jobs/{id}/retry` | – (`?force=1` for a running job) | job view (202); resets a `failed` or stuck (no update for `JOB_STUCK_MS`, default 10 min) job to its first incomplete stage, clears `error`, keeps finished stage outputs (no ASR redo). 409 if done/running, 404 unknown | retryJob ✓ |

@@ -3,7 +3,7 @@
  * Uploads are multipart through the function (local/self-hosted). On Vercel the 4.5 MB body limit applies:
  * use POST /api/upload (Blob client upload) + POST /v1/lectures/{id}/audio/segments with JSON {seq,...,url}.
  */
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db, ensureDb, schema } from "@/db";
 import { pdfToText } from "../context";
@@ -12,7 +12,7 @@ import { bad, id, notFound } from "../http";
 import { dedupeTranscript } from "../providers/dedupe";
 import { getProvider } from "../providers";
 import { deleteFileUrl } from "../storage";
-import { materialsText, advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, retryJob, type Artifacts } from "../pipeline";
+import { materialsText, advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, resumeStage, retryJob, type Artifacts } from "../pipeline";
 import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
 import { blobAccess, isAcceptableUploadUrl, readFileUrl, saveFile } from "../storage";
 import { cleanHebrew, stripNiqqud } from "../providers/prompts";
@@ -249,9 +249,21 @@ export async function startProcess(req: Request, lid: string) {
   const course = await db.query.courses.findFirst({ where: eq(schema.courses.id, l.courseId) });
   if (!segs.some((s) => s.url) && !l.audioUrl && !materialsText(l, course) && getProvider().name !== "mock")
     return j({ error: "lecture has no audio and no slides/PDF materials", audio_missing: true }, 409);
+  // Reuse a live (ASR-while-recording) job: options.live keeps it in ASR waiting for more parts; a final call without
+  // live clears the flag so the same job (with its finished ASR) continues to repair → summary → pdf.
+  const prev = await db.query.jobs.findFirst({ where: and(eq(schema.jobs.lectureId, lid), ne(schema.jobs.stage, "done")), orderBy: desc(schema.jobs.updatedAt) });
+  const pa = prev ? JSON.parse(prev.artifacts) as Artifacts & { options?: { live?: boolean } } : null;
+  if (prev && pa?.options?.live) {
+    if (!options.live || prev.stage === "failed") { // failed (e.g. 429) live jobs resume on the next upload
+      pa.options = { ...pa.options, ...options, live: !!options.live };
+      await db.update(schema.jobs).set({ artifacts: JSON.stringify(pa), updatedAt: Date.now(),
+        ...(prev.stage === "failed" ? { stage: resumeStage(pa), error: null } : {}) }).where(eq(schema.jobs.id, prev.id));
+    }
+    return j({ job_id: prev.id, live: !!options.live }, 202);
+  }
   const job_id = id();
   await db.insert(schema.jobs).values({ id: job_id, lectureId: lid, stage: "queued", artifacts: JSON.stringify({ options }), updatedAt: Date.now() });
-  return j({ job_id }, 202);
+  return j({ job_id, live: !!options.live }, 202);
 }
 
 function jobView(job: typeof schema.jobs.$inferSelect) {
