@@ -403,6 +403,22 @@ export async function deleteJob(jid: string) {
   return j({ ok: true, deleted: true, job_id: jid });
 }
 
+/** DELETE /v1/courses/{id} — delete a course: all its lectures (jobs, segments, files, blobs), course files + context PDF blobs, then the course row. Idempotent. */
+export async function deleteCourse(cid: string) {
+  const c = await db.query.courses.findFirst({ where: eq(schema.courses.id, cid) });
+  if (!c) return j({ ok: true, deleted: false, course_id: cid });
+  const ls = await db.select({ id: schema.lectures.id }).from(schema.lectures).where(eq(schema.lectures.courseId, cid));
+  for (const l of ls) await deleteLecture(l.id);
+  const files = await db.select().from(schema.courseFiles).where(eq(schema.courseFiles.courseId, cid));
+  const urls = new Set<string>(files.map((f) => f.url));
+  if (c.contextPdfUrl) urls.add(c.contextPdfUrl);
+  let blobErrors = 0;
+  await Promise.all([...urls].map((u) => deleteFileUrl(u).catch((e) => { blobErrors++; console.warn("blob delete failed", u, e?.message); })));
+  await db.delete(schema.courseFiles).where(eq(schema.courseFiles.courseId, cid));
+  await db.delete(schema.courses).where(eq(schema.courses.id, cid));
+  return j({ ok: true, deleted: true, course_id: cid, lectures: ls.length, blobs: urls.size, blob_errors: blobErrors });
+}
+
 export { ensureDb };
 
 /**
