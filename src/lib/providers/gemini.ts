@@ -306,9 +306,10 @@ export const geminiProvider: AiProvider = {
   async summarize(t, repairs, ctx): Promise<LectureSummary> {
     const prompt = summaryPrompt(t, repairs, ctx);
     const first = await json<LectureSummary>([prompt]);
-    if (ctx.slidesOnly || !summaryTooShort(first, t)) return first;
-    console.warn(`summary too short (${spokenSectionCount(first)} sections, target ${depthTargets(t).sections}); retrying with expand`);
-    const second = await json<LectureSummary>([prompt + expandNote(spokenSectionCount(first), t)]).catch(() => null);
+    const dn = ctx.density ?? "standard";
+    if (ctx.slidesOnly || !summaryTooShort(first, t, dn)) return first;
+    console.warn(`summary too short (${spokenSectionCount(first)} sections, target ${depthTargets(t, dn).sections}, ${dn}); retrying with expand`);
+    const second = await json<LectureSummary>([prompt + expandNote(spokenSectionCount(first), t, dn)]).catch(() => null);
     return second && spokenSectionCount(second) > spokenSectionCount(first) ? second : first;
   },
   hierarchicalStep(t, ctx, state, deadline) {

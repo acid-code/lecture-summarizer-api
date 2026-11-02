@@ -1,3 +1,4 @@
+import { parseDensity, DENSITIES, type Density } from "../providers/types";
 /**
  * /v1 API — the contract the Android app (HttpLectureApi.kt) calls. snake_case JSON.
  * Uploads are multipart through the function (local/self-hosted). On Vercel the 4.5 MB body limit applies:
@@ -12,7 +13,7 @@ import { bad, id, notFound } from "../http";
 import { dedupeTranscript } from "../providers/dedupe";
 import { getProvider } from "../providers";
 import { deleteFileUrl } from "../storage";
-import { materialsText, advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, resumeStage, retryJob, type Artifacts } from "../pipeline";
+import { materialsText, advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, resumeStage, jobDensity, retryJob, type Artifacts } from "../pipeline";
 import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
 import { blobAccess, isAcceptableUploadUrl, readFileUrl, saveFile } from "../storage";
 import { normalizeSegments, parseSrt, type ImportSegment } from "../transcript-import";
@@ -284,6 +285,11 @@ export async function uploadMarkers(req: Request, lid: string) {
 export async function startProcess(req: Request, lid: string) {
   const l = await lectureOr404(lid); if (!l) return notFound();
   const options = (await req.json().catch(() => ({})))?.options ?? {};
+  { // density: single level; densities: several levels (one summary job each, ASR shared)
+    const ds = (Array.isArray(options.densities) ? options.densities : []).map(parseDensity).filter(Boolean) as Density[];
+    const d0 = parseDensity(options.density) ?? ds[0] ?? "standard";
+    options.density = d0; options.densities = ds.length > 1 ? [...new Set(ds)] : undefined;
+  }
   // Need audio or materials (lecture decks, or course files) — slides-only summaries don't need a recording.
   const segs = await db.select().from(schema.segments).where(eq(schema.segments.lectureId, lid));
   const course = await db.query.courses.findFirst({ where: eq(schema.courses.id, l.courseId) });
@@ -337,7 +343,7 @@ export async function importTranscript(req: Request, lid: string) {
 function jobView(job: typeof schema.jobs.$inferSelect) {
   const a = JSON.parse(job.artifacts) as Artifacts;
   const state = job.stage === "done" ? "done" : job.stage === "failed" ? "failed" : job.stage === "queued" ? "queued" : "running";
-  return { job_id: job.id, lecture_id: job.lectureId, state, stage: job.stage, progress: progressOf(job.stage), error: job.error,
+  return { job_id: job.id, lecture_id: job.lectureId, density: jobDensity(a), state, stage: job.stage, progress: progressOf(job.stage), error: job.error,
     pdf_ready: !!a.pdf, asr_source: a.asrSource ?? "audio", slides_only: !!a.slidesOnly, transcript_ready: !!(a.repaired ?? a.asr)?.segments?.length, transcript_thin: a.summary?.transcript_thin ?? null,
     asr_incomplete: !!a.asrIncomplete, asr_check: a.asrCheck ?? null, coverage: a.coverage ?? null,
     warning: a.asrIncomplete ? `ASR incomplete — reprocess needed (transcript ends ${Math.round((a.asrCheck?.asrEndSec ?? 0) / 60)} of ${Math.round((a.asrCheck?.uploadedSec ?? 0) / 60)} min uploaded)` : a.coverage && !a.coverage.ok ? `Summary covers ${Math.round(a.coverage.ratio * 100)}% of the lecture` : null,
@@ -398,7 +404,9 @@ export async function getTranscript(lid: string) {
 
 /** POST /v1/jobs/{id}/resummarize[?force=1] — clear summary/pdf, keep ASR+repair, re-run from summary. */
 export async function postResummarize(req: Request, jid: string) {
-  const r = await resummarizeJob(jid, new URL(req.url).searchParams.get("force") === "1");
+  const q = new URL(req.url).searchParams;
+  const body = await req.json().catch(() => ({}));
+  const r = await resummarizeJob(jid, q.get("force") === "1", parseDensity(q.get("density") ?? body?.density));
   if (!r.ok && r.reason === "not_found") return notFound();
   if (!r.ok) return j({ ...jobView(r.job!), error: "needs a done/failed job with complete ASR (use ?force=1 for a running job)" }, 409);
   return j(jobView(r.job), 202);
@@ -423,13 +431,25 @@ export async function postReprocess(req: Request, jid: string) {
   return j({ ...jobView(r.job), mode: r.mode, audio_missing: !!r.audioMissing }, 202);
 }
 
-async function latestDone(lid: string) {
+async function latestDone(lid: string, density?: Density) {
   const jobs = await db.select().from(schema.jobs).where(and(eq(schema.jobs.lectureId, lid), eq(schema.jobs.stage, "done")));
-  return jobs.sort((x, y) => y.updatedAt - x.updatedAt)[0];
+  return jobs.filter((x) => !density || jobDensity(JSON.parse(x.artifacts)) === density).sort((x, y) => y.updatedAt - x.updatedAt)[0];
 }
 
-export async function summaryFile(lid: string, kind: "pdf" | "html" | "json") {
-  const job = await latestDone(lid); if (!job) return j({ error: "no finished job" }, 404);
+/** GET /v1/lectures/{id}/summaries — newest done job per density level (plus any in-flight). */
+export async function listSummaries(lid: string) {
+  const jobs = (await db.select().from(schema.jobs).where(eq(schema.jobs.lectureId, lid))).sort((x, y) => y.updatedAt - x.updatedAt);
+  const out: Record<string, unknown> = {};
+  for (const d of DENSITIES) {
+    const done = jobs.find((x) => x.stage === "done" && jobDensity(JSON.parse(x.artifacts)) === d);
+    const running = jobs.find((x) => x.stage !== "done" && x.stage !== "failed" && jobDensity(JSON.parse(x.artifacts)) === d && (!done || x.updatedAt > done.updatedAt));
+    out[d] = { done_job_id: done?.id ?? null, updated_at: done ? new Date(done.updatedAt).toISOString() : null, running_job_id: running?.id ?? null };
+  }
+  return j({ lecture_id: lid, densities: out });
+}
+
+export async function summaryFile(lid: string, kind: "pdf" | "html" | "json", density?: Density) {
+  const job = await latestDone(lid, density); if (!job) return j({ error: density ? `no finished ${density} summary` : "no finished job" }, 404);
   const a = JSON.parse(job.artifacts) as Artifacts;
   if (kind === "json") return j({ summary: a.summary, repairs: a.repair, transcript: a.repaired ?? a.asr, figures: a.figures ?? null, figures_note: a.figuresNote ?? null });
   const url = kind === "pdf" ? a.pdf : a.html;
