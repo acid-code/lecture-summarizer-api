@@ -23,7 +23,8 @@ const unent = (s: unknown) => str(s).replace(/&(gt|lt|amp|quot|#39);/g, (_, e) =
  * render correctly inside RTL Hebrew instead of being reordered into garbage like `frac\ - 1)left\`.
  */
 const bidiPlain = (s: string) =>
-  esc(s).replace(/(\\[A-Za-z]+[^\s\u0590-\u05FF]*(?:\s+[^\s\u0590-\u05FF]+)*|[A-Za-z][A-Za-z0-9\-_. ]*[A-Za-z0-9])/g, '<bdi dir="ltr">$1</bdi>');
+  // HTML entities from esc() (&amp; …) are skipped so their letters are never wrapped (was rendering "&" as ";amp&").
+  esc(s).replace(/(&(?:[a-z]+|#\d+);)|(\\[A-Za-z]+[^\s\u0590-\u05FF]*(?:\s+[^\s\u0590-\u05FF]+)*|[A-Za-z][A-Za-z0-9\-_. ]*[A-Za-z0-9])/g, (m, ent) => ent ? m : `<bdi dir="ltr">${m}</bdi>`);
 
 /**
  * Math: LaTeX in summary text is rendered server-side with KaTeX (pure JS → HTML+CSS, no browser JS needed),
@@ -168,7 +169,7 @@ dt{font-weight:bold}h1,h2{line-height:1.3}ul{padding-inline-start:1.2em}.cite{di
 .math,.katex,.katex-display{unicode-bidi:isolate;direction:ltr}bdi.math{display:inline-block}div.math{display:block}.cite-inline{unicode-bidi:isolate;direction:ltr;white-space:nowrap;color:#666;font-size:.85em}div.math{text-align:center;margin:.4em 0}.big-picture[dir=rtl]{direction:rtl;text-align:right}.big-picture[dir=ltr]{direction:ltr;text-align:left}.big-picture{border-top:2px solid #ccc;margin-top:2em;padding-top:.5em;page-break-before:auto}.katex{font-size:1.05em}.fig{margin:.5em auto;text-align:center;break-inside:avoid;page-break-inside:avoid}.fig img{display:block;margin:0 auto;max-width:100%;max-height:80mm;object-fit:contain;border:1px solid #ddd}.fig figcaption{font-size:.85em;color:#444;margin-top:.3em}.fig figcaption[dir=rtl]{direction:rtl}.katex{font-size:1.05em}
 </style></head><body>
 <h1>${bidi(s.title)}</h1>${s.transcript_thin ? `<p class="cite" style="direction:rtl">שימו לב: התמלול של ההקלטה קצר/חסר ביחס לשקפים — חלק מהסיכום מבוסס על השקפים בלבד.</p>` : ""}${arr(s.overview).map((o) => `<p>${bidi(o)}</p>`).join("")}
-${arr<any>(s.sections).map((x, i) => `<h2>${bidi(x.heading)}</h2><ul>${arr(x.bullets).map((b) => `<li>${bidi(b)}</li>`).join("")}</ul>${x.citation ? `<p class="cite" dir="ltr"><bdi dir="ltr">${esc(unent(x.citation))}</bdi></p>` : ""}${figs(i)}`).join("\n")}
+${arr<any>(s.sections).map((x, i) => `<h2>${bidi(x.heading)}</h2>${x.style === "prose" ? arr(x.bullets).map((b) => `<p>${bidi(b)}</p>`).join("") : `<ul>${arr(x.bullets).map((b) => `<li>${bidi(b)}</li>`).join("")}</ul>`}${x.citation ? `<p class="cite" dir="ltr"><bdi dir="ltr">${esc(unent(x.citation))}</bdi></p>` : ""}${figs(i)}`).join("\n")}
 <h2>מילון מונחים</h2><dl>${arr<any>(s.glossary).map((g) => `<dt>${bidi(g.term)}</dt><dd>${bidi(g.explanation)}</dd>`).join("")}</dl>
 ${renderBigPicture(s.big_picture)}
 </body></html>`;

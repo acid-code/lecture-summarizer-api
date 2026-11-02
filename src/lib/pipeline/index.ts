@@ -1,3 +1,4 @@
+import { asrSpan, type HierState } from "../providers/hierarchical";
 import { asrCompleteness, computeCoverage, mergeTranscripts, fixBackwardRanges, fmtWin, mergeGapSections, sliceTranscript, type Coverage } from "./coverage";
 import { and, asc, desc, eq, ne } from "drizzle-orm";
 import { db, ensureDb, schema } from "@/db";
@@ -14,7 +15,7 @@ import { readFileUrl } from "../storage";
 
 export interface Artifacts {
   asr?: Transcript; /** ASR before dedupe (append-only), so later dedupe changes can be re-applied from it */ asrRaw?: Transcript; asrParts?: number; /** next ASR window start (s) inside the current part */ asrWindowStart?: number; asrComplete?: boolean; /** ASR ended well before the uploaded audio (e.g. parts whose blobs expired) */ asrIncomplete?: boolean; asrCheck?: ReturnType<typeof asrCompleteness>; coverage?: Coverage | null; coverageBefore?: Coverage | null; repair?: Repair[]; repaired?: Transcript;
-  summary?: LectureSummary; /** figures embedded in the PDF (metadata only) */ figures?: { page: number; deck?: string; section: number; caption: string }[]; figuresNote?: string; html?: string; pdf?: string; audioDeleted?: boolean;
+  summary?: LectureSummary; /** resumable hierarchical-summary state (long lectures) */ hier?: HierState; hierFailed?: string; summaryMode?: "hierarchical" | "single"; /** figures embedded in the PDF (metadata only) */ figures?: { page: number; deck?: string; section: number; caption: string }[]; figuresNote?: string; html?: string; pdf?: string; audioDeleted?: boolean;
   /** No audio on the server: summary built from lecture slides/PDFs (or course files) only; ASR+repair skipped. */
   slidesOnly?: boolean;
   /** Detail about the next/current unit of work, for client progress text. */
@@ -100,7 +101,7 @@ export async function resummarizeJob(jobId: string, force = false): Promise<Retr
   // Incomplete terminal work (summary/pdf missing, e.g. a crashed/timed-out summary call) is always restartable.
   const incomplete = !!a.asrComplete && (!a.summary || !a.pdf) && a.progressDetail?.stage !== job.stage; // honest in-flight work still needs stuck/force
   if (!a.asrComplete || (job.stage !== "done" && job.stage !== "failed" && !stuck && !force && !incomplete)) return { ok: false, reason: "not_retryable", job };
-  delete a.summary; delete a.html; delete a.pdf;
+  delete a.summary; delete a.html; delete a.pdf; delete a.hier; delete a.hierFailed;
   await withSiblingAsr(job.lectureId, jobId, a); // always pull earlier sessions' transcripts, even without redoing ASR/repair
   const stage = resumeStage(a);
   a.progressDetail = { stage, label: stageLabel(stage) }; // never leave a stale "Done" behind
@@ -146,7 +147,7 @@ export async function rerepairJob(jobId: string, force = false): Promise<RetryRe
   // Incomplete terminal work (summary/pdf missing, e.g. a crashed/timed-out summary call) is always restartable.
   const incomplete = !!a.asrComplete && (!a.summary || !a.pdf) && a.progressDetail?.stage !== job.stage; // honest in-flight work still needs stuck/force
   if (!a.asrComplete || (job.stage !== "done" && job.stage !== "failed" && !stuck && !force && !incomplete)) return { ok: false, reason: "not_retryable", job };
-  delete a.repair; delete a.repaired; delete a.summary; delete a.html; delete a.pdf;
+  delete a.repair; delete a.repaired; delete a.summary; delete a.html; delete a.pdf; delete a.hier; delete a.hierFailed; delete a.hier; delete a.hierFailed;
   await withSiblingAsr(job.lectureId, jobId, a);
   { const segRows = await db.select().from(schema.segments).where(eq(schema.segments.lectureId, job.lectureId));
     a.asrCheck = asrCompleteness(a.asr, segRows.reduce((n, r) => n + (r.duration ?? 0), 0)); a.asrIncomplete = a.asrCheck.incomplete || undefined; }
@@ -311,7 +312,22 @@ export async function advanceJob(jobId: string) {
       case "summary":
       {
         const tr = a.repaired ?? a.asr ?? { language: "he", segments: [] };
-        a.summary = await ai.summarize(tr, a.repair ?? [], ctx);
+        const t0 = Date.now();
+        let hs: LectureSummary | null = null;
+        if (!a.slidesOnly && ai.hierarchicalStep && !a.hierFailed && useHierarchical(tr)) {
+          try { a.hier ??= {}; hs = await ai.hierarchicalStep(tr, ctx, a.hier, t0 + HIER_BUDGET_MS); }
+          catch (e) { a.hierFailed = (e as Error).message.slice(0, 300); console.warn("hierarchical summary failed, falling back to single-call:", a.hierFailed); }
+          if (!hs) {
+            // Not finished (time budget) → continue next invocation; failed → single-call path next invocation (fresh 300 s).
+            next = "summary";
+            const h = a.hier ?? {}, n = h.outline?.sections?.length;
+            a.progressDetail = { stage: "summary", label: a.hierFailed ? "Summarizing (fallback)" : n ? `Summarizing sections ${h.sections?.length ?? 0}/${n}` : `Summarizing notes ${h.parts?.length ?? 0} parts` };
+            break;
+          }
+          delete a.hier;
+        }
+        a.summaryMode = hs ? "hierarchical" : "single";
+        a.summary = hs ?? await ai.summarize(tr, a.repair ?? [], ctx);
         if (!a.slidesOnly) {
           const cov = computeCoverage(tr, a.summary);
           a.coverageBefore = cov;
@@ -365,5 +381,14 @@ function shortErr(e: unknown): string {
   return m.length > 400 ? m.slice(0, 400) + "…" : m;
 }
 
+/** Hierarchical summary for long lectures: SUMMARY_HIERARCHICAL=auto (default; ASR span ≥ SUMMARY_HIER_MIN_MINUTES, default 65) | on | off. */
+export function useHierarchical(tr: Transcript): boolean {
+  const mode = (process.env.SUMMARY_HIERARCHICAL || "auto").toLowerCase();
+  if (/^(0|off|false|no)$/.test(mode)) return false;
+  if (!tr.segments?.length) return false;
+  if (/^(1|on|true|yes|always)$/.test(mode)) return true;
+  return asrSpan(tr) >= Number(process.env.SUMMARY_HIER_MIN_MINUTES || 65) * 60;
+}
+const HIER_BUDGET_MS = Number(process.env.SUMMARY_HIER_BUDGET_MS || 270_000);
 /** No big gap but low ratio: target every uncovered stretch > 3 min. */
 function gapsAll(c: Coverage): [number, number][] { return c.gaps.length ? c.gaps : c.holes.length ? c.holes : [[c.asrStart, c.asrEnd]]; }

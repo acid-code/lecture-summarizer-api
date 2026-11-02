@@ -2,6 +2,7 @@ import { GoogleGenAI, createPartFromUri, type Part } from "@google/genai";
 import { readFileUrl } from "../storage";
 import { clipper } from "./clip";
 import { applyRepairs, repairPrompt, spellingPrompt, summaryPrompt, NO_NIQQUD, summaryTooShort, spokenSectionCount, expandNote, depthTargets } from "./prompts";
+import { hierarchicalStep } from "./hierarchical";
 import type { AiProvider, Repair, LectureSummary, Transcript, WindowTranscript } from "./types";
 
 /**
@@ -309,5 +310,8 @@ export const geminiProvider: AiProvider = {
     console.warn(`summary too short (${spokenSectionCount(first)} sections, target ${depthTargets(t).sections}); retrying with expand`);
     const second = await json<LectureSummary>([prompt + expandNote(spokenSectionCount(first), t)]).catch(() => null);
     return second && spokenSectionCount(second) > spokenSectionCount(first) ? second : first;
+  },
+  hierarchicalStep(t, ctx, state, deadline) {
+    return hierarchicalStep(t, ctx, <T,>(p: string) => json<T>([p]), state, deadline);
   },
 };

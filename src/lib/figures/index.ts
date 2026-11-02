@@ -18,7 +18,8 @@ import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { getDocumentProxy, getResolvedPDFJS, renderPageAsImage } from "unpdf";
 import type { LectureSummary } from "../providers/types";
-import { isPptx } from "../pptx";
+import { isPptx, pptxSlides } from "../pptx";
+import { unzipSync } from "fflate";
 
 // pdf.js (unpdf) uses ArrayBuffer#transferToFixedLength (Node >= 21); polyfill for Node 20.
 const AB = ArrayBuffer.prototype as unknown as { transferToFixedLength?: (n?: number) => ArrayBuffer };
@@ -232,6 +233,39 @@ export function isTitleSlide(p: { page: number; text: string; imageOps: number }
   return false;
 }
 export let lastFigureNote = "";
+/** Heuristic (no-vision) picks score 6-6.2 when uncited; the vision threshold (7) silently dropped all of them. */
+const HEURISTIC_MIN_REL = 6;
+/** MISTRAL_API_KEY (also accepts the misspelled MISTRAL_API_KRY that production was configured with). */
+export const mistralKey = () => (process.env.MISTRAL_API_KEY || process.env.MISTRAL_API_KRY || "").trim() || undefined;
+
+/** PPTX without LibreOffice: per slide, its largest embedded raster picture (≥15 KB) as a JPEG candidate. */
+export async function pptxMediaPages(deck: string, data: Uint8Array): Promise<PageInfo[]> {
+  try {
+    const texts = pptxSlides(data);
+    const files = unzipSync(data, { filter: (f) => /^ppt\/(slides\/_rels\/slide\d+\.xml\.rels|_rels\/presentation\.xml\.rels|presentation\.xml|media\/[^/]+\.(png|jpe?g))$/i.test(f.name) });
+    const str = (n: string) => (files[n] ? new TextDecoder().decode(files[n]) : "");
+    const rels = Object.fromEntries([...str("ppt/_rels/presentation.xml.rels").matchAll(/<Relationship\b[^>]*>/g)].map((m) => [m[0].match(/Id="([^"]+)"/)?.[1], m[0].match(/Target="([^"]+)"/)?.[1]]));
+    let order = [...str("ppt/presentation.xml").matchAll(/<p:sldId\b[^>]*r:id="([^"]+)"/g)].map((m) => rels[m[1]]).filter(Boolean).map((t) => String(t).replace(/^\/?(ppt\/)?(slides\/)?/, ""));
+    if (!order.length) order = Object.keys(files).filter((f) => /^ppt\/slides\/_rels\//.test(f)).map((f) => f.split("/").pop()!.replace(".rels", "")).sort((a, b) => +a.match(/\d+/)![0] - +b.match(/\d+/)![0]);
+    const { loadImage, createCanvas } = await canvasMod();
+    const out: PageInfo[] = [];
+    for (let i = 0; i < order.length; i++) {
+      const rel = str(`ppt/slides/_rels/${order[i]}.rels`);
+      const media = [...rel.matchAll(/Target="\.\.\/media\/([^"]+\.(?:png|jpe?g))"/gi)].map((m) => files[`ppt/media/${m[1]}`]).filter(Boolean);
+      const big = media.sort((a, b) => b.length - a.length)[0];
+      if (!big || big.length < 15_000) continue;
+      try {
+        const img = await loadImage(Buffer.from(big));
+        if (img.width < 200 || img.height < 150) continue;
+        const sc = Math.min(1, WIDTH() / img.width); const c = createCanvas(Math.round(img.width * sc), Math.round(img.height * sc)); const g = c.getContext("2d");
+        g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+        const text = (texts[i]?.text ?? "").replace(/\s+/g, " ").trim();
+        out.push({ deck, page: i + 1, text, imageOps: media.length, score: 3 + Math.min(media.length, 4) - Math.min(text.length / 300, 3), jpeg: c.toBuffer("image/jpeg", 75) });
+      } catch { /* unsupported image */ }
+    }
+    return out;
+  } catch (e) { console.warn("pptx media extraction failed:", (e as Error).message); return []; }
+}
 export async function pickFigures(decks: SlideDeck[], s: LectureSummary): Promise<Figure[]> {
   lastFigureNote = !figuresEnabled() ? "FIGURES=off" : !decks.length ? "no decks" : !s.sections?.length ? "no sections" : "";
   if (lastFigureNote) return [];
@@ -242,7 +276,11 @@ export async function pickFigures(decks: SlideDeck[], s: LectureSummary): Promis
     for (const d of decks) {
       const pdfData = isPptx(d.mime, d.name) || d.name.toLowerCase().endsWith(".pptx") ? await pptxToPdf(d.data)
         : d.mime.includes("pdf") || d.name.toLowerCase().endsWith(".pdf") ? d.data : null;
-      if (!pdfData) continue;
+      if (!pdfData) {
+        // No LibreOffice (Vercel): use the largest embedded picture of each slide straight from the PPTX zip.
+        if (isPptx(d.mime, d.name) || d.name.toLowerCase().endsWith(".pptx")) all.push(...await pptxMediaPages(d.name, d.data));
+        continue;
+      }
       const { pdf, pages } = await analyze(d.name, pdfData);
       docs.set(d.name, pdf); pdfBytes.set(d.name, pdfData); all.push(...pages);
     }
@@ -254,7 +292,7 @@ export async function pickFigures(decks: SlideDeck[], s: LectureSummary): Promis
     const cands: PageInfo[] = [];
     for (const c of pool) {
       if (cands.length >= MAX_PAGES()) break;
-      c.jpeg = await renderJpeg(docs.get(c.deck)!, pdfBytes.get(c.deck)!, c.page);
+      if (!c.jpeg) c.jpeg = await renderJpeg(docs.get(c.deck)!, pdfBytes.get(c.deck)!, c.page);
       if (c.jpeg.length < 3000) continue; // near-blank render → would print as an empty band
       c.sha = createHash("sha1").update(c.jpeg).digest("hex"); c.dhash = await dhash(c.jpeg);
       if (cands.some((k) => sameImage(k, c))) continue; // same slide in PDF+PPTX, or repeated slide: send once
@@ -263,7 +301,7 @@ export async function pickFigures(decks: SlideDeck[], s: LectureSummary): Promis
     if (!cands.length) { lastFigureNote = `no candidate pages (${all.length} analyzed)`; return []; }
     const he = /[\u0590-\u05FF]/.test(s.overview + s.title);
     let picks: Pick[] | null = null;
-    const key = process.env.MISTRAL_API_KEY?.trim();
+    const key = mistralKey();
     if (key) {
       // Batch candidates (≤8 images per call), run in parallel; finalizePicks ranks all batches together by relevance.
       const n = IMAGES_PER_CALL(), batches: PageInfo[][] = [];
@@ -277,7 +315,7 @@ export async function pickFigures(decks: SlideDeck[], s: LectureSummary): Promis
     else picks = finalizePicks(s, cands.filter((c) => c.imageOps > 0 && c.text.length < 400).map((c) => {
       const cited = citedSections(s, c.page);
       return { c, section: cited.length ? cited[0] : matchSection(s, c.text), caption: c.text.slice(0, 120), relevance: (cited.length ? 8 : 6) + Math.min(c.score, 2) / 10 };
-    }), Math.min(max, 4));
+    }).filter((p) => p.section >= 0), Math.min(max, 4), PER_SECTION(), HEURISTIC_MIN_REL);
     if (!picks.length) lastFigureNote = "no relevant figures";
     const multi = decks.length > 1;
     return picks.sort((a, b) => a.section - b.section || a.c.deck.localeCompare(b.c.deck) || a.c.page - b.c.page)

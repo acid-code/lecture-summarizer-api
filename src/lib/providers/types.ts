@@ -6,7 +6,8 @@ export interface LectureSummary {
   title: string;
   /** Hebrew RTL prose with English technical terms inline. */
   overview: string;
-  sections: { heading: string; bullets: string[]; citation?: string }[];
+  /** style "prose": bullets are full paragraphs (rendered as <p>, not <li>). */
+  sections: { heading: string; bullets: string[]; citation?: string; style?: "prose" }[];
   glossary: { term: string; explanation: string }[];
   /** True when the transcript was empty/very short vs slides (summary leans on slides). */
   transcript_thin?: boolean;
@@ -46,4 +47,6 @@ export interface AiProvider {
   transcribe(audio: AudioInput, ctx: LectureContext): Promise<WindowTranscript>;
   repairTerms(t: Transcript, ctx: LectureContext): Promise<Repair[]>;
   summarize(t: Transcript, repairs: Repair[], ctx: LectureContext): Promise<LectureSummary>;
+  /** Long lectures: resumable hierarchical summary step; null = not finished (state updated, call again). */
+  hierarchicalStep?(t: Transcript, ctx: LectureContext, state: import("./hierarchical").HierState, deadline: number): Promise<LectureSummary | null>;
 }
