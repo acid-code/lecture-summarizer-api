@@ -1,3 +1,4 @@
+import { parseDensity } from "@/lib/providers/types";
 import { authenticate } from "@/lib/auth";
 import { notFound } from "@/lib/http";
 import { getProvider } from "@/lib/providers";
@@ -60,9 +61,10 @@ async function route(req: Request, { params }: Ctx) {
       if (m === "GET" && c === "files" && !d) return h.listFiles(b);
       if (m === "GET" && c === "files" && d) return h.getFile(b, d);
       if (m === "GET" && c === "transcript" && !d) return h.getTranscript(b);
-      if (m === "GET" && c === "summary.pdf") return h.summaryFile(b, "pdf");
-      if (m === "GET" && c === "summary.html") return h.summaryFile(b, "html");
-      if (m === "GET" && c === "summary.json") return h.summaryFile(b, "json");
+      if (m === "GET" && c === "summaries") return h.listSummaries(b);
+      if (m === "GET" && c === "summary.pdf") return h.summaryFile(b, "pdf", parseDensity(new URL(req.url).searchParams.get("density")));
+      if (m === "GET" && c === "summary.html") return h.summaryFile(b, "html", parseDensity(new URL(req.url).searchParams.get("density")));
+      if (m === "GET" && c === "summary.json") return h.summaryFile(b, "json", parseDensity(new URL(req.url).searchParams.get("density")));
     }
     if (a === "jobs" && !b && m === "GET") return h.listJobs(dev);
     if (a === "jobs" && b) {

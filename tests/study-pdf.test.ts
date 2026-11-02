@@ -12,7 +12,8 @@ test("title / cover slides are skipped", () => {
   assert.ok(!isTitleSlide({ page: 14, text: "Shattering: a set of 3 points in R^2 can be shattered by linear classifiers, diagram below shows all 8 labelings and separating lines", imageOps: 3 }));
 });
 test("depthTargets scales for a 120 min lecture", () => {
-  const d = depthTargets(tr(120));
+  const d = depthTargets(tr(120), "detailed");
+  assert.ok(depthTargets(tr(120)).sections < d.sections && depthTargets(tr(120), "compact").sections < depthTargets(tr(120)).sections);
   assert.equal(d.minutes, 120);
   assert.ok(d.sections >= 30 && d.sections <= 36, String(d.sections));
   assert.ok(d.bulletsLo >= 5 && d.bulletsHi <= 10); // leaner bullets (Nov 2026 retune)

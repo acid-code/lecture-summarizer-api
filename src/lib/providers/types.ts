@@ -39,7 +39,12 @@ export interface LectureContext {
   slidesOnly?: boolean;
   /** Retrieved excerpts from the course-context pack (never the whole PDF). */
   courseExcerpts?: (query: string, budget?: number) => string;
+  /** Summary density: compact (short review sheet), standard (default study notes), detailed (near-exhaustive). */
+  density?: Density;
 }
+export type Density = "compact" | "standard" | "detailed";
+export const DENSITIES: Density[] = ["compact", "standard", "detailed"];
+export const parseDensity = (v: unknown): Density | undefined => DENSITIES.includes(v as Density) ? v as Density : undefined;
 
 /** Behind an interface so ASR/LLM can move to ivrit-ai Whisper etc. via config later. */
 export interface AiProvider {

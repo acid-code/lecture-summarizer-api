@@ -1,3 +1,4 @@
+import type { Density } from "./types";
 import type { LectureContext, Repair, Transcript } from "./types";
 
 /** Hebrew combining marks: cantillation (U+0591–05AF), niqqud points (U+05B0–05BD, 05BF, 05C1–05C2, 05C4–05C5, 05C7).
@@ -188,41 +189,59 @@ export function slidesForSummary(slides?: string | null, head = 10000, tail = 50
   return slides.slice(0, head) + `\n…(middle slides omitted)…\nFINAL SLIDES (end of deck, closing summary):\n` + slides.slice(-tail);
 }
 
-/** Target density scaled by spoken length so long lectures get proportionally more sections/bullets (not padding). */
-export function depthTargets(t: Transcript) {
+/** Target density scaled by spoken length and the chosen density level (standard = tight study notes). */
+export function depthTargets(t: Transcript, density: Density = "standard") {
   const segs = t.segments ?? [];
   const minutes = segs.length ? Math.max(1, (Math.max(...segs.map((x) => x.end)) - Math.min(...segs.map((x) => x.start))) / 60) : 0;
   const long = minutes >= 90;
-  const sections = Math.min(long ? 36 : 28, Math.max(4, Math.round(minutes / (long ? 3.5 : 4))));
-  return { minutes: Math.round(minutes), sections, bulletsLo: long ? 5 : 4, bulletsHi: long ? 10 : 8 };
+  if (density === "detailed") {
+    const sections = Math.min(long ? 36 : 28, Math.max(4, Math.round(minutes / (long ? 3.5 : 4))));
+    return { minutes: Math.round(minutes), sections, bulletsLo: long ? 6 : 5, bulletsHi: long ? 14 : 12, density };
+  }
+  if (density === "compact") {
+    const sections = Math.min(14, Math.max(3, Math.round(minutes / 10)));
+    return { minutes: Math.round(minutes), sections, bulletsLo: 3, bulletsHi: 6, density };
+  }
+  const sections = Math.min(22, Math.max(4, Math.round(minutes / 6)));
+  return { minutes: Math.round(minutes), sections, bulletsLo: 4, bulletsHi: 8, density };
 }
 
-/** Coverage + professor-emphasis rules: summaries were too short and dropped distinct subjects / specific details. */
-export function depthBlock(t: Transcript) {
-  const d = depthTargets(t);
-  return `DEPTH & COVERAGE (the previous summaries were TOO SHORT and dropped topics — fix that):
+const COMPRESSION = `COMPRESSION (this is a STUDY SUMMARY, not a transcript paraphrase):
+- NEVER retell the lecture sentence by sentence or near-verbatim. Distill each stretch of speech into teachable notes:
+  the rule/definition, how to apply it, the key example in one line, the exam trap.
+- Course admin, logistics, jokes, anecdotes, roll-call, "what we'll do today": at most 1-2 short bullets in the first section, and only if useful (e.g. exam/homework dates or grading).
+- KEEP and prioritize: definitions, rules/laws, step-by-step procedures (e.g. how to build a Punnett square / read a pedigree / solve a problem type),
+  formulas, exam-critical hints, common mistakes, and the concrete numbers/ratios that matter. Drop repetitions, false starts, side chatter.
+- When the lecturer solves an example/exercise, give the setup + method + result compactly, not the whole spoken walk-through.`;
+
+/** Coverage + compression rules, scaled by density. */
+export function depthBlock(t: Transcript, density: Density = "standard") {
+  const d = depthTargets(t, density);
+  if (density === "detailed") return `DEPTH & COVERAGE (DETAILED level — thorough notes):
 - Cover EVERY distinct subject, sub-topic, example and digression the lecturer spent real time on, in spoken order. A topic
-  change in the transcript = its own section (or sub-group of bullets); never merge unrelated topics to save space.
-- The transcript below spans the whole ~${d.minutes} minutes of speech. Sections must cover it end to end;
-  [t=…] citations should be spread across the full time range, not concentrated in one window.
-- HARD MINIMUM for this ~${d.minutes}-minute lecture: at least ${d.sections} spoken-topic sections (more if the lecture changes subject often), each with
-  ${d.bulletsLo}-${d.bulletsHi} bullets.
-- READABILITY (summaries were too packed with words — keep them lean and scannable): ONE idea per bullet, 1-2 SHORT
-  sentences (aim ≤25 words, hard max ~40). Lead with the key term or claim, then the detail ("מונח — הסבר קצר").
-  No chains of clauses, no stacking several facts with commas/semicolons into one bullet — split them or drop the minor one.
-  Plain, direct Hebrew; no introductory phrases ("המרצה הסביר ש…", "חשוב לציין כי…", "בנוסף לכך"); never restate the heading.
-- Keep the SPECIFICS that matter for studying: exact numbers, values, units, thresholds, named examples, experiments, names, dates,
-  step-by-step procedures, formula derivations, comparisons ("X vs Y"), exceptions and edge cases. Prefer the concrete detail over a generic paraphrase.
-- PROFESSOR'S KEY NOTES — scan the transcript for what the lecturer stressed and never drop it: phrases like "חשוב", "שימו לב",
-  "זה יהיה במבחן"/"למבחן", "תזכרו", "הנקודה המרכזית", "טעות נפוצה", "important", "note that", "key point", repetition of the
-  same idea, slowing down to define something, explicit definitions, caveats/warnings, common mistakes, and hints about
-  exams/homework. Start these bullets with "חשוב: " and keep the lecturer's specific wording/detail. Also add a section
-  titled "דגשים חשובים של המרצה" (placed right after the spoken sections, before "סיכום מהמצגת") that lists 5-15 of the most
-  important such notes, each cited [t=…]. Exam/homework hints go first.
-- Definitions said aloud go both in the relevant bullet AND in the glossary (glossary: every technical term defined or used centrally; aim 8-25 entries).
-- "overview": 4-6 sentences listing the main subjects in order.
-- Not rambling: no filler, no repeating the same point in two sections, no generic textbook material the lecturer did not say.
-  Length should come from more covered topics, never from wordiness or longer bullets. When in doubt, shorter.`;
+  change in the transcript = its own section; never merge unrelated topics to save space.
+- The transcript spans ~${d.minutes} minutes; sections must cover it end to end, [t=…] citations spread across the full range.
+- About ${d.sections} spoken-topic sections, each with ${d.bulletsLo}-${d.bulletsHi} bullets of 1-3 information-dense sentences.
+- Keep the SPECIFICS: numbers, units, thresholds, named examples, procedures, derivations, comparisons, exceptions.
+- Still no near-verbatim retelling and no filler: admin/anecdotes at most briefly. Length comes from content, not wordiness.
+${emphasisRules(d)}`;
+  return `DEPTH & COVERAGE (${density.toUpperCase()} level):
+${COMPRESSION}
+- Still cover the FULL timeline (beginning, middle AND end) — every distinct subject the lecturer taught gets covered; never drop mid/late topics.
+  [t=…] citations spread across the whole ~${d.minutes} minutes. Merge closely related small topics into one section.
+- Target roughly ${d.sections} spoken-topic sections (use judgment: fewer if the lecture is repetitive, more if it changes subject often),
+  each ${d.bulletsLo}-${d.bulletsHi} bullets. Each bullet ${density === "compact" ? "is one short line (a fact, rule or step)" : "is 1-2 dense sentences"} — a note a student would write, not prose.
+${density === "compact" ? "- Compact = a review sheet for the night before the exam: only the essentials, one-line definitions, key procedures and exam hints.\n" : "- Standard = real study notes: what you need to understand and solve problems, without the retelling. Aim for something like 6-9 PDF pages per hour of exercise/lecture (judgment, not a cap).\n"}${emphasisRules(d)}`;
+}
+
+function emphasisRules(d: ReturnType<typeof depthTargets>) {
+  const n = d.density === "compact" ? "3-8" : d.density === "detailed" ? "5-15" : "4-10";
+  return `- PROFESSOR'S KEY NOTES — keep what the lecturer explicitly stressed ("חשוב", "שימו לב", "למבחן", "תזכרו", "טעות נפוצה", "important",
+  repetition, explicit definitions, warnings, exam/homework hints). Start such bullets with "חשוב: ". Also add a section titled
+  "דגשים חשובים של המרצה" (right after the spoken sections, before "סיכום מהמצגת") with ${n} of the most important such notes, each cited [t=…]; exam/homework hints first.
+- Definitions said aloud go in the glossary (Hebrew + English term; aim ${d.density === "compact" ? "5-15" : "8-25"} entries).
+- "overview": ${d.density === "compact" ? "2-4" : "3-6"} sentences listing the main subjects in order.
+- No filler, no repeating a point in two sections, no generic textbook material the lecturer did not say.`;
 }
 
 export function summaryPrompt(t: Transcript, repairs: Repair[], ctx: LectureContext) {
@@ -252,7 +271,7 @@ CITATIONS (mixed, required):
 ${thin ? `WARNING: the transcript is empty or very short relative to the slides. Say so explicitly at the start of the
 overview (in Hebrew: the recording/transcript covers only a small part of the lecture), summarize what the transcript does
 contain with [t=…] cites, mark the rest as slide-only with [slide N], and set "transcript_thin": true.` : `Set "transcript_thin": false.`}
-${depthBlock(t)}
+${depthBlock(t, ctx.density ?? "standard")}
 PRIMARY SOURCE — transcript (lecture time M:SS):
 ${fmtTimed(t) || "(empty)"}
 Term repairs already applied: ${JSON.stringify(repairs)}
@@ -287,18 +306,19 @@ export function applyRepairs(t: Transcript, repairs: Repair[], min = 0.6): Trans
 export function spokenSectionCount(s: { sections?: { heading?: string }[] }): number {
   return (s.sections ?? []).filter((x) => !/דגשים חשובים|סיכום מהמצגת/.test(x.heading ?? "")).length;
 }
-/** Summary clearly under-produced vs depth target → worth one "expand" retry. */
-export function summaryTooShort(s: { sections?: { heading?: string; bullets?: string[] }[] }, t: Transcript): boolean {
-  const d = depthTargets(t);
+/** Summary clearly under-produced vs depth target → worth one "expand" retry (only for gross under-production). */
+export function summaryTooShort(s: { sections?: { heading?: string; bullets?: string[] }[] }, t: Transcript, density: Density = "standard"): boolean {
+  const d = depthTargets(t, density);
   if (d.minutes < 20) return false;
   const n = spokenSectionCount(s);
   const bullets = (s.sections ?? []).reduce((a, x) => a + (x.bullets?.length ?? 0), 0);
-  return n < Math.ceil(d.sections * 0.6) || bullets < d.sections * d.bulletsLo * 0.5;
+  const f = density === "detailed" ? 0.6 : 0.45;
+  return n < Math.ceil(d.sections * f) || bullets < d.sections * d.bulletsLo * (density === "detailed" ? 0.5 : 0.4);
 }
-export function expandNote(prevSections: number, t: Transcript): string {
-  const d = depthTargets(t);
-  return `\n\nIMPORTANT — YOUR PREVIOUS ANSWER WAS FAR TOO SHORT (${prevSections} sections for a ~${d.minutes}-minute lecture). ` +
-    `Rewrite it from the FULL transcript (beginning, middle AND end): at least ${d.sections} spoken-topic sections with ` +
-    `${d.bulletsLo}-${d.bulletsHi} short, one-idea bullets each, plus "דגשים חשובים של המרצה" and a glossary of 8-25 terms. ` +
-    `Add more topics the lecturer covered — keep each bullet short; no filler, no repetition.`;
+export function expandNote(prevSections: number, t: Transcript, density: Density = "standard"): string {
+  const d = depthTargets(t, density);
+  return `\n\nIMPORTANT — YOUR PREVIOUS ANSWER DROPPED TOPICS (${prevSections} sections for a ~${d.minutes}-minute lecture). ` +
+    `Rewrite it from the FULL transcript (beginning, middle AND end): about ${d.sections} spoken-topic sections with ` +
+    `${d.bulletsLo}-${d.bulletsHi} bullets each, plus "דגשים חשובים של המרצה" and a glossary. ` +
+    `Add the missing TOPICS — keep bullets concise study notes, never a sentence-by-sentence retelling.`;
 }
