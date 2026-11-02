@@ -15,6 +15,7 @@ import { deleteFileUrl } from "../storage";
 import { materialsText, advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, resumeStage, retryJob, type Artifacts } from "../pipeline";
 import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
 import { blobAccess, isAcceptableUploadUrl, readFileUrl, saveFile } from "../storage";
+import { normalizeSegments, parseSrt, type ImportSegment } from "../transcript-import";
 import { cleanHebrew, stripNiqqud } from "../providers/prompts";
 
 const j = (b: unknown, status = 200) => Response.json(b, { status });
@@ -305,11 +306,39 @@ export async function startProcess(req: Request, lid: string) {
   return j({ job_id, live: !!options.live }, 202);
 }
 
+/**
+ * POST /v1/lectures/{id}/transcript/import — use an external timed transcript (e.g. TAU Panopto captions) as the job's ASR.
+ * Body: JSON { source?, external_id?, title?, language?, segments?: [{t0|start, t1|end, text}], srt? }
+ * or a raw SRT body (Content-Type: application/x-subrip / text/plain). No audio needed: the job starts at "repair".
+ */
+export async function importTranscript(req: Request, lid: string) {
+  const l = await lectureOr404(lid); if (!l) return notFound();
+  const ct = req.headers.get("content-type") ?? "";
+  let body: { source?: string; external_id?: string; title?: string; language?: string; segments?: ImportSegment[]; srt?: string };
+  if (ct.includes("application/json")) body = (await req.json().catch(() => null)) ?? {};
+  else body = { srt: await req.text() };
+  const url = new URL(req.url).searchParams;
+  const course = await db.query.courses.findFirst({ where: eq(schema.courses.id, l.courseId) });
+  const language = body.language || url.get("language") || course?.langPrimary || "he";
+  const asr = typeof body.srt === "string" && body.srt.trim() ? parseSrt(body.srt, language)
+    : Array.isArray(body.segments) ? normalizeSegments(body.segments, language) : null;
+  if (!asr) return j({ error: "provide segments[] or an SRT body" }, 400);
+  if (!asr.segments.length) return j({ error: "transcript has no timed segments" }, 422);
+  const source = String(body.source || url.get("source") || "panopto").slice(0, 40);
+  const externalId = body.external_id ?? url.get("external_id") ?? undefined;
+  if (typeof body.title === "string" && body.title.trim()) await db.update(schema.lectures).set({ title: body.title.trim() }).where(eq(schema.lectures.id, lid));
+  const a: Artifacts = { asr, asrComplete: true, asrSource: source, asrExternalId: externalId, progressDetail: { stage: "repair", label: stageLabel("repair") } };
+  const job_id = id();
+  await db.insert(schema.jobs).values({ id: job_id, lectureId: lid, stage: "repair", artifacts: JSON.stringify({ ...a, options: { source } }), updatedAt: Date.now() });
+  const segs = asr.segments;
+  return j({ job_id, source, segments: segs.length, start_sec: segs[0].start, end_sec: Math.max(...segs.map((s) => s.end)) }, 202);
+}
+
 function jobView(job: typeof schema.jobs.$inferSelect) {
   const a = JSON.parse(job.artifacts) as Artifacts;
   const state = job.stage === "done" ? "done" : job.stage === "failed" ? "failed" : job.stage === "queued" ? "queued" : "running";
   return { job_id: job.id, lecture_id: job.lectureId, state, stage: job.stage, progress: progressOf(job.stage), error: job.error,
-    pdf_ready: !!a.pdf, slides_only: !!a.slidesOnly, transcript_ready: !!(a.repaired ?? a.asr)?.segments?.length, transcript_thin: a.summary?.transcript_thin ?? null,
+    pdf_ready: !!a.pdf, asr_source: a.asrSource ?? "audio", slides_only: !!a.slidesOnly, transcript_ready: !!(a.repaired ?? a.asr)?.segments?.length, transcript_thin: a.summary?.transcript_thin ?? null,
     asr_incomplete: !!a.asrIncomplete, asr_check: a.asrCheck ?? null, coverage: a.coverage ?? null,
     warning: a.asrIncomplete ? `ASR incomplete — reprocess needed (transcript ends ${Math.round((a.asrCheck?.asrEndSec ?? 0) / 60)} of ${Math.round((a.asrCheck?.uploadedSec ?? 0) / 60)} min uploaded)` : a.coverage && !a.coverage.ok ? `Summary covers ${Math.round(a.coverage.ratio * 100)}% of the lecture` : null,
     updated_at: new Date(job.updatedAt).toISOString(), repairs: a.repair ?? null,
