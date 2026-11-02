@@ -18,6 +18,8 @@ export interface Artifacts {
   summary?: LectureSummary; /** resumable hierarchical-summary state (long lectures) */ hier?: HierState; hierFailed?: string; summaryMode?: "hierarchical" | "single"; /** figures embedded in the PDF (metadata only) */ figures?: { page: number; deck?: string; section: number; caption: string }[]; figuresNote?: string; html?: string; pdf?: string; audioDeleted?: boolean;
   /** No audio on the server: summary built from lecture slides/PDFs (or course files) only; ASR+repair skipped. */
   slidesOnly?: boolean;
+  /** Where the ASR came from: our audio ASR (unset) or an imported external transcript (e.g. "panopto"). */
+  asrSource?: string; asrExternalId?: string;
   /** Detail about the next/current unit of work, for client progress text. */
   progressDetail?: ProgressDetail;
 }

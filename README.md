@@ -169,3 +169,17 @@ The `pdf` stage (`src/lib/figures/`) embeds important graphs/diagrams from the l
 5. `render.ts` places each figure (caption RTL when Hebrew, `[שקף N]`) after its section. Figure metadata is kept in `artifacts.figures`. Failures never fail the job (text-only PDF). `FIGURES=off` disables.
 
 Limits: PPTX figures need LibreOffice (not on Vercel → PPTX decks stay text-only there; PDFs work). ~6 JPEGs add ≈1 MB to the PDF.
+
+## External transcript import (Panopto)
+
+`POST /v1/lectures/{id}/transcript/import` uses an existing timed transcript (e.g. TAU Panopto captions from
+`GenerateSRT.ashx?id={deliveryId}&language=0`) instead of our audio ASR. No audio segments are needed.
+
+- JSON: `{ "source": "panopto", "external_id": "<deliveryId>", "title": "…", "language": "he", "segments": [{ "t0": 0.0, "t1": 2.4, "text": "…" }] }`
+  (`start`/`end` also accepted; or put the raw SRT in `"srt"`).
+- Raw SRT body: `Content-Type: application/x-subrip` (or `text/plain`); `?source=&external_id=&language=` optional.
+
+The parser drops Panopto's `[Auto-generated transcript…]` disclaimer and recurring `Speaker Name: ` prefixes.
+A new job gets `artifacts.asr` = the transcript, `asrComplete=true`, `asrSource` (default `panopto`) and starts at
+`repair` → `summary` → `pdf` (poll `GET /v1/jobs/{id}`; `asr_source` is reported). Returns `202 { job_id, source, segments, start_sec, end_sec }`.
+Check an SRT locally: `npx tsx scripts/check-srt.ts file.srt`.
