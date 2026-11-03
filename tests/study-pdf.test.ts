@@ -15,7 +15,7 @@ test("depthTargets scales for a 120 min lecture", () => {
   const d = depthTargets(tr(120));
   assert.equal(d.minutes, 120);
   assert.ok(d.sections >= 30 && d.sections <= 36, String(d.sections));
-  assert.ok(d.bulletsLo >= 6);
+  assert.ok(d.bulletsLo >= 5 && d.bulletsHi <= 10); // leaner bullets (Nov 2026 retune)
   assert.equal(depthTargets(tr(10)).sections, 4);
 });
 test("4-section summary of 120 min lecture is too short", () => {

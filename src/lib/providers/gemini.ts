@@ -25,6 +25,8 @@ import { availableModels, markExhausted, isDailyQuota, isQuotaError, retryDelayS
 export { cooldowns } from "./quota";
 const INLINE_MAX = 15 * 1024 * 1024; // inline small files (request limit ~20 MB); larger go through the Files API
 import { geminiKeys, keyId, keyPool, maskKey } from "./keys";
+import { backoffMs, classifyGeminiError, GeminiOverloadedError, overloadFallback } from "./overload";
+export { GeminiOverloadedError } from "./overload";
 const clients = new Map<string, GoogleGenAI>();
 const clientFor = (key: string) => { let c = clients.get(key); if (!c) clients.set(key, c = new GoogleGenAI({ apiKey: key })); return c; };
 /** Client for the first non-skipped key (used for Files API uploads). */
@@ -49,57 +51,93 @@ async function uploadToGemini(ai: GoogleGenAI, url: string, fallbackMime: string
  * Walk the Lite-first ladder, skipping models persisted as RPD-exhausted (until next UTC midnight).
  * - Daily quota (RPD) 429 → persist cooldown, move to next model, never retry it again today.
  * - Per-minute (RPM) 429 → short backoff (Google retryDelay, capped) and retry the same model once, then next model.
- * - 500/503/overloaded → bounded jittered backoff (GEMINI_RETRIES, GEMINI_RETRY_BUDGET_MS).
- * Repeated per key (GEMINI_API_KEY + GEMINI_API_KEYS): when a key's ladder is exhausted, the next key is tried; a key whose
- * ladder hit RPD is skipped until 00:00 UTC. If every key is exhausted/rate-limited, throw a short QuotaError.
+ * - 503 / UNAVAILABLE / high demand → exponential backoff + jitter on the same model (GEMINI_OVERLOAD_RETRIES, default 3),
+ *   then fall back to GEMINI_FALLBACK_MODEL (default gemini-3.1-flash-lite), then other ladder rungs. Keys are NOT rotated
+ *   for overload; if everything stays overloaded a GeminiOverloadedError is thrown (pipeline holds the job, doesn't fail it).
+ * - 500 INTERNAL → bounded jittered backoff (GEMINI_RETRIES). All waits share GEMINI_RETRY_BUDGET_MS.
+ * - Invalid/revoked key → next key. Quota: when a key's ladder is exhausted the next key is tried; a key whose
+ *   ladder hit RPD is skipped until 00:00 UTC. If every key is exhausted/rate-limited, throw a short QuotaError.
  */
 async function withRetry<T>(f: (model: string, ai: GoogleGenAI) => Promise<T>, tries = Number(process.env.GEMINI_RETRIES || 5)): Promise<T> {
   const keys = keyPool.available(geminiKeys());
+  let authErr: Error | undefined, sawQuota = false;
   for (let i = 0; i < keys.length; i++) {
-    try { return await withRetryKey(keys[i], f, tries); } catch (e) {
+    try { return await withRetryKey(keys[i], i, f, tries); } catch (e) {
+      if (e instanceof KeyAuthError) { authErr = e; console.warn(`gemini key#${i} (${keyId(keys[i])}): auth error, trying next key`); continue; }
       if (!(e instanceof QuotaError)) throw e;
+      sawQuota = true;
       if ((e as KeyQuotaError).daily) keyPool.markExhausted(keys[i]);
       if (i + 1 < keys.length) console.warn(`gemini key ${maskKey(keys[i])}: model ladder exhausted, switching to next key (${i + 2}/${keys.length})`);
     }
   }
+  if (authErr && !sawQuota) throw new Error(authErr.message);
   throw new QuotaError();
 }
 class KeyQuotaError extends QuotaError { constructor(public daily: boolean) { super(); } }
+class KeyAuthError extends Error {}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** One key: walk its model ladder. Cooldown rows are per key (`model#keyId`), so one key's RPD doesn't block others. */
-async function withRetryKey<T>(key: string, f: (model: string, ai: GoogleGenAI) => Promise<T>, tries: number): Promise<T> {
+async function withRetryKey<T>(key: string, kidx: number, f: (model: string, ai: GoogleGenAI) => Promise<T>, tries: number): Promise<T> {
   const ai = clientFor(key), kid = keyId(key), slot = (m: string) => `${m}#${kid}`;
   const budget = Number(process.env.GEMINI_RETRY_BUDGET_MS || 90_000);
+  const overloadTries = Number(process.env.GEMINI_OVERLOAD_RETRIES || 3);
   const start = Date.now();
-  let transient = 0;
+  let transient = 0, overloaded = 0;
   const all = models();
   const { available } = await availableModels(all.map(slot));
   const ladder = all.filter((m) => available.includes(slot(m)));
   if (!ladder.length) throw new KeyQuotaError(true);
   let idx = 0, rpmRetried = false, onlyDaily = true;
+  let override: string | null = null; // overload fallback model (may be outside the ladder)
+  const triedOverloaded = new Set<string>();
   for (;;) {
-    if (idx >= ladder.length) throw new KeyQuotaError(onlyDaily);
-    const model = ladder[idx];
+    if (!override && idx >= ladder.length) throw new KeyQuotaError(onlyDaily);
+    const model = override ?? ladder[idx];
     try { return await f(model, ai); } catch (e) {
       const msg = (e as Error).message ?? "";
-      if (isQuotaError(msg)) {
-        if (isDailyQuota(msg)) { await markExhausted(slot(model), msg); idx++; rpmRetried = false; continue; }
-        const wait = Math.min(20_000, (retryDelaySec(msg) ?? 5) * 1000) + Math.random() * 1000;
-        if (!rpmRetried && Date.now() - start + wait <= budget) {
-          console.warn(`gemini ${model}: per-minute rate limit (RPM), retrying same model in ${Math.round(wait / 1000)}s`);
-          rpmRetried = true;
-          await new Promise((r) => setTimeout(r, wait));
+      const kind = classifyGeminiError(msg);
+      const tag = `gemini model=${model} key#${kidx}(${kid})`;
+      if (kind === "overloaded") {
+        overloaded++;
+        const wait = backoffMs(overloaded, Number(process.env.GEMINI_OVERLOAD_BASE_MS || 2000), 20_000);
+        if (overloaded < overloadTries && Date.now() - start + wait <= budget) {
+          console.warn(`${tag}: 503 overloaded (attempt ${overloaded}/${overloadTries}), backing off ${Math.round(wait / 1000)}s`);
+          await sleep(wait);
           continue;
         }
-        console.warn(`gemini ${model}: still rate-limited, trying next model`);
-        onlyDaily = false;
-        idx++; rpmRetried = false;
+        triedOverloaded.add(model);
+        const fb = overloadFallback(model, ladder, triedOverloaded);
+        if (!fb || Date.now() - start > budget) {
+          console.warn(`${tag}: still overloaded, no fallback left / budget spent — giving up (tried ${[...triedOverloaded].join(",")})`);
+          throw new GeminiOverloadedError([...triedOverloaded]);
+        }
+        console.warn(`${tag}: still overloaded after ${overloaded} attempts — falling back to model=${fb}`);
+        override = fb; overloaded = 0;
         continue;
       }
-      if (++transient >= tries || !/\b(500|503)\b|UNAVAILABLE|overloaded|INTERNAL/i.test(msg)) throw e;
-      const wait = Math.min(30_000, 3000 * 2 ** (transient - 1)) * (0.75 + Math.random() * 0.5);
+      if (kind === "daily_quota" || kind === "rpm") {
+        if (override) { override = null; } // fallback model out of quota → resume the ladder
+        if (kind === "daily_quota") { console.warn(`${tag}: daily quota (RPD) hit, next model`); await markExhausted(slot(model), msg); if (ladder[idx] === model) idx++; rpmRetried = false; continue; }
+        const wait = Math.min(20_000, (retryDelaySec(msg) ?? 5) * 1000) + Math.random() * 1000;
+        if (!rpmRetried && Date.now() - start + wait <= budget) {
+          console.warn(`${tag}: per-minute rate limit (RPM), retrying in ${Math.round(wait / 1000)}s`);
+          rpmRetried = true;
+          await sleep(wait);
+          continue;
+        }
+        console.warn(`${tag}: still rate-limited, trying next model`);
+        onlyDaily = false;
+        if (ladder[idx] === model) idx++;
+        rpmRetried = false;
+        continue;
+      }
+      if (kind === "auth") throw new KeyAuthError(`${tag}: ${msg.slice(0, 200)}`);
+      if (kind !== "transient" || ++transient >= tries) throw e;
+      const wait = backoffMs(transient, 3000, 30_000);
       if (Date.now() - start + wait > budget) throw e;
-      await new Promise((r) => setTimeout(r, wait));
+      console.warn(`${tag}: transient error (attempt ${transient}/${tries}), backing off ${Math.round(wait / 1000)}s`);
+      await sleep(wait);
     }
   }
 }

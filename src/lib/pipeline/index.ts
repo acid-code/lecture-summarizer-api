@@ -8,6 +8,7 @@ import { htmlToPdf } from "../pdf";
 import { getProvider, type AudioInput, type LectureContext, type Repair, type Transcript, type LectureSummary } from "../providers";
 import { applyRepairs, isTranscriptThin, cleanTranscript } from "../providers/prompts";
 import { dedupeTranscript } from "../providers/dedupe";
+import { GeminiOverloadedError, overloadHoldMs } from "../providers/overload";
 import { deleteFileUrl, saveArtifact } from "../storage";
 import { renderStudyHtml } from "./render";
 import { figuresEnabled, pickFigures, lastFigureNote, type SlideDeck } from "../figures";
@@ -22,6 +23,9 @@ export interface Artifacts {
   asrSource?: string; asrExternalId?: string;
   /** Detail about the next/current unit of work, for client progress text. */
   progressDetail?: ProgressDetail;
+  /** Gemini 503 soft hold: advance is a no-op until this epoch ms; overloadHolds counts consecutive holds. */
+  holdUntil?: number;
+  overloadHolds?: number;
 }
 
 export interface ProgressDetail {
@@ -229,6 +233,8 @@ export async function advanceJob(jobId: string) {
     courseExcerpts: (q, budget) => retrieveExcerpts(course?.contextText, q, budget),
   };
   const a = JSON.parse(job.artifacts) as Artifacts;
+  if (job.stage !== "failed" && a.holdUntil && a.holdUntil > Date.now()) return job; // overload hold: don't call Gemini yet
+  delete a.holdUntil;
   const ai = getProvider();
   if (a.slidesOnly) { ctx.slidesOnly = true; ctx.slidesText = materialsText(lecture, course); }
 
@@ -361,6 +367,7 @@ export async function advanceJob(jobId: string) {
     // A final POST /process may clear options.live while this (long) ASR call runs; don't overwrite it with our stale copy.
     const fresh = await db.query.jobs.findFirst({ where: eq(schema.jobs.id, jobId) });
     if (fresh) { const fo = (JSON.parse(fresh.artifacts) as { options?: object }).options; if (fo) (a as { options?: object }).options = fo; }
+    delete a.overloadHolds;
     const ns = next ?? "done";
     if (ns !== "asr" || current !== "asr") a.progressDetail = { stage: ns, label: stageLabel(ns) + (a.asrIncomplete ? " · ASR incomplete — reprocess needed" : "") };
     const [row] = await db.update(schema.jobs)
@@ -368,6 +375,18 @@ export async function advanceJob(jobId: string) {
       .where(eq(schema.jobs.id, jobId)).returning();
     return row;
   } catch (e) {
+    if (e instanceof GeminiOverloadedError && (a.overloadHolds ?? 0) < Number(process.env.GEMINI_OVERLOAD_MAX_HOLDS || 8)) {
+      // Soft hold instead of `failed`: keep the stage, back off, and let the next poll resume after holdUntil.
+      // Prevents the client's fail→retry loop from hammering an overloaded model every 15-30 s.
+      const holds = (a.overloadHolds ?? 0) + 1, wait = overloadHoldMs(holds - 1);
+      a.overloadHolds = holds; a.holdUntil = Date.now() + wait;
+      a.progressDetail = { stage: current, label: `Gemini busy (high demand) — auto-retry in ${Math.round(wait / 60_000) || 1} min` };
+      console.warn(`job ${jobId} ${current}: Gemini overloaded, holding ${Math.round(wait / 1000)}s (hold ${holds})`);
+      const [row] = await db.update(schema.jobs)
+        .set({ stage: current, error: null, artifacts: JSON.stringify(a), updatedAt: Date.now() })
+        .where(eq(schema.jobs.id, jobId)).returning();
+      return row;
+    }
     const [row] = await db.update(schema.jobs)
       .set({ stage: "failed", error: `${current}: ${shortErr(e)}`, artifacts: JSON.stringify(a), updatedAt: Date.now() })
       .where(eq(schema.jobs.id, jobId)).returning();

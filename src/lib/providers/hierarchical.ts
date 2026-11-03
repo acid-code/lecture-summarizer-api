@@ -9,7 +9,7 @@ import { NO_NIQQUD } from "./prompts";
 
 export type JsonFn = <T = any>(prompt: string, opts?: { strong?: boolean }) => Promise<T>;
 export const HIER_PART_SEC = 600;
-export const HIER_MIN_WORDS = 350;
+export const HIER_MIN_WORDS = 250;
 export const HIER_MAX_CHASHUV = 12;
 
 const mmss = (s: number) => { s = Math.round(s); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
@@ -84,8 +84,8 @@ NOTES: ${JSON.stringify(parts)}`);
     const raw = segs.filter((x) => x.start >= a && x.start <= b).map((x) => `[t=${mmss(x.start)}] ${x.text}`).join("\n");
     if (!raw.trim()) return null;
     const prompt = `Write ONE section of a Hebrew study guide for "${title}". Heading: "${sec.heading}" (lecture ${sec.t_start}-${sec.t_end}).
-Write 450-750 words of Hebrew PROSE (connected explanatory paragraphs, not bullet fragments) with English technical terms inline (code-switch), split into 3-7 paragraphs. Each paragraph ends with a [t=M:SS] or [t=M:SS-M:SS] citation using only times from the transcript. Cover must_include: ${JSON.stringify(sec.must_include ?? [])}.
-Explain the reasoning, intuition and every example/number the lecturer gives. At most ONE paragraph may start with "חשוב: " and only if the lecturer explicitly stressed it; otherwise do not use the word "חשוב". Formulas in \\( \\). ${NO_NIQQUD} No filler.
+Write 300-500 words of clear Hebrew PROSE with English technical terms inline (code-switch), split into 3-6 SHORT paragraphs (2-4 short sentences each, one idea per paragraph). Readers found earlier sections too packed with words: use short direct sentences, no long clause chains, no filler openers, no restating the heading. Each paragraph ends with a [t=M:SS] or [t=M:SS-M:SS] citation using only times from the transcript. Cover must_include: ${JSON.stringify(sec.must_include ?? [])}.
+Explain the reasoning and intuition; keep the key examples/numbers, skip minor asides. At most ONE paragraph may start with "חשוב: " and only if the lecturer explicitly stressed it; otherwise do not use the word "חשוב". Formulas in \\( \\). ${NO_NIQQUD} No filler.
 Return JSON {"heading","paragraphs":[string],"citation":"[t=..]"}.
 STRUCTURED NOTES: ${JSON.stringify(rel)}
 TRANSCRIPT EXCERPT:
@@ -94,7 +94,7 @@ ${raw}`;
     let w = words(r.paragraphs ?? []);
     if (w < HIER_MIN_WORDS) {
       log(`hier section "${sec.heading}" only ${w} words; retrying`);
-      const r2: any = await Jc(prompt + `\n\nYour previous answer was only ${w} words — too short. Write at least 500 words: expand every explanation, derivation and example from the transcript.`, { strong: true }).catch(() => null);
+      const r2: any = await Jc(prompt + `\n\nYour previous answer was only ${w} words — too short. Write at least 300 words by covering more of what the lecturer explained (derivations, examples) — keep sentences short.`, { strong: true }).catch(() => null);
       if (r2 && words(r2.paragraphs ?? []) > w) { r = r2; w = words(r2.paragraphs ?? []); }
     }
     log(`hier section "${sec.heading}" ${w}w`);
