@@ -20,7 +20,7 @@ phone/web ──(Vercel Blob client upload, multipart)──► Blob  (audio, sl
 - Function request body limit is **4.5 MB** → audio/slides go straight to Blob via `/api/upload` (client uploads). A ~50 min m4a is ~20–80 MB (verify).
 - Each `POST /api/jobs/{id}/advance` runs **one stage** (`maxDuration = 300`, the Hobby max). Call it until `stage === "done"` (client polling now; Vercel Cron/Queues/Workflows later).
 - Stages are idempotent; artifacts are saved per stage on the job, so a `failed` job resumes from the first missing stage.
-- AI is behind `AiProvider` (`src/lib/providers`): **Gemini** when `GEMINI_API_KEY` is set, otherwise a **mock** (lets you run everything without a key). Swap in ivrit-ai Whisper etc. later via a new provider.
+- AI is behind `AiProvider` (`src/lib/providers`): **Gemini** when `GEMINI_API_KEY` or `GEMINI_API_KEYS` is set, otherwise a **mock** (lets you run everything without a key). Swap in ivrit-ai Whisper etc. later via a new provider.
 - Course-level **context PDF** (old course summary, ~150–200 pages) is optional background context; each **lecture** = audio + optional slides.
 
 ## Free path setup
@@ -36,7 +36,7 @@ Expected: ~$0/mo for 1 user, ~1 lecture/week; ~$0–5/mo if free limits bite (ve
 
 ### 1. Gemini API key
 1. Go to https://aistudio.google.com/apikey and create a key.
-2. Put it in `.env.local` as `GEMINI_API_KEY` (and in Vercel → Project → Settings → Environment Variables).
+2. Put it in `.env.local` as `GEMINI_API_KEY` (and in Vercel → Project → Settings → Environment Variables). For more daily quota, add `GEMINI_API_KEYS=key1,key2` (keys from different Google projects): when a key's model ladder hits RPD, calls fail over to the next key; that key is skipped until 00:00 UTC. Keys are never logged (only an 8-char hash id).
 3. `GEMINI_MODEL` defaults to the first rung of the model ladder (`gemini-3.5-flash-lite`), see below.
 
 **Google AI Pro** (the Gemini app subscription) is separate from Gemini **API** billing; Pro may add AI Studio quota / Cloud credits (verify). The free API tier is enough to start. Free-tier API data may be used to improve Google products (verify) — keep audio private-ish accordingly.

@@ -24,7 +24,11 @@ export class QuotaError extends Error { constructor() { super(QUOTA_MSG); } }
 import { availableModels, markExhausted, isDailyQuota, isQuotaError, retryDelaySec } from "./quota";
 export { cooldowns } from "./quota";
 const INLINE_MAX = 15 * 1024 * 1024; // inline small files (request limit ~20 MB); larger go through the Files API
-const client = () => new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+import { geminiKeys, keyId, keyPool, maskKey } from "./keys";
+const clients = new Map<string, GoogleGenAI>();
+const clientFor = (key: string) => { let c = clients.get(key); if (!c) clients.set(key, c = new GoogleGenAI({ apiKey: key })); return c; };
+/** Client for the first non-skipped key (used for Files API uploads). */
+const client = () => { const k = keyPool.available(geminiKeys())[0] ?? geminiKeys()[0]; if (!k) throw new Error("GEMINI_API_KEY(S) not set"); return clientFor(k); };
 
 /** Upload a stored file (Blob URL or local:) to the Gemini Files API and wait until ACTIVE. */
 async function uploadToGemini(ai: GoogleGenAI, url: string, fallbackMime: string): Promise<Part> {
@@ -46,22 +50,40 @@ async function uploadToGemini(ai: GoogleGenAI, url: string, fallbackMime: string
  * - Daily quota (RPD) 429 → persist cooldown, move to next model, never retry it again today.
  * - Per-minute (RPM) 429 → short backoff (Google retryDelay, capped) and retry the same model once, then next model.
  * - 500/503/overloaded → bounded jittered backoff (GEMINI_RETRIES, GEMINI_RETRY_BUDGET_MS).
- * If every model is exhausted/rate-limited, throw a short QuotaError.
+ * Repeated per key (GEMINI_API_KEY + GEMINI_API_KEYS): when a key's ladder is exhausted, the next key is tried; a key whose
+ * ladder hit RPD is skipped until 00:00 UTC. If every key is exhausted/rate-limited, throw a short QuotaError.
  */
-async function withRetry<T>(f: (model: string) => Promise<T>, tries = Number(process.env.GEMINI_RETRIES || 5)): Promise<T> {
+async function withRetry<T>(f: (model: string, ai: GoogleGenAI) => Promise<T>, tries = Number(process.env.GEMINI_RETRIES || 5)): Promise<T> {
+  const keys = keyPool.available(geminiKeys());
+  for (let i = 0; i < keys.length; i++) {
+    try { return await withRetryKey(keys[i], f, tries); } catch (e) {
+      if (!(e instanceof QuotaError)) throw e;
+      if ((e as KeyQuotaError).daily) keyPool.markExhausted(keys[i]);
+      if (i + 1 < keys.length) console.warn(`gemini key ${maskKey(keys[i])}: model ladder exhausted, switching to next key (${i + 2}/${keys.length})`);
+    }
+  }
+  throw new QuotaError();
+}
+class KeyQuotaError extends QuotaError { constructor(public daily: boolean) { super(); } }
+
+/** One key: walk its model ladder. Cooldown rows are per key (`model#keyId`), so one key's RPD doesn't block others. */
+async function withRetryKey<T>(key: string, f: (model: string, ai: GoogleGenAI) => Promise<T>, tries: number): Promise<T> {
+  const ai = clientFor(key), kid = keyId(key), slot = (m: string) => `${m}#${kid}`;
   const budget = Number(process.env.GEMINI_RETRY_BUDGET_MS || 90_000);
   const start = Date.now();
   let transient = 0;
-  const { available: ladder } = await availableModels(models());
-  if (!ladder.length) throw new QuotaError();
-  let idx = 0, rpmRetried = false;
+  const all = models();
+  const { available } = await availableModels(all.map(slot));
+  const ladder = all.filter((m) => available.includes(slot(m)));
+  if (!ladder.length) throw new KeyQuotaError(true);
+  let idx = 0, rpmRetried = false, onlyDaily = true;
   for (;;) {
-    if (idx >= ladder.length) throw new QuotaError();
+    if (idx >= ladder.length) throw new KeyQuotaError(onlyDaily);
     const model = ladder[idx];
-    try { return await f(model); } catch (e) {
+    try { return await f(model, ai); } catch (e) {
       const msg = (e as Error).message ?? "";
       if (isQuotaError(msg)) {
-        if (isDailyQuota(msg)) { await markExhausted(model, msg); idx++; rpmRetried = false; continue; }
+        if (isDailyQuota(msg)) { await markExhausted(slot(model), msg); idx++; rpmRetried = false; continue; }
         const wait = Math.min(20_000, (retryDelaySec(msg) ?? 5) * 1000) + Math.random() * 1000;
         if (!rpmRetried && Date.now() - start + wait <= budget) {
           console.warn(`gemini ${model}: per-minute rate limit (RPM), retrying same model in ${Math.round(wait / 1000)}s`);
@@ -70,6 +92,7 @@ async function withRetry<T>(f: (model: string) => Promise<T>, tries = Number(pro
           continue;
         }
         console.warn(`gemini ${model}: still rate-limited, trying next model`);
+        onlyDaily = false;
         idx++; rpmRetried = false;
         continue;
       }
@@ -102,7 +125,7 @@ export class BadJsonError extends Error {
 }
 
 async function rawJson(contents: (Part | string)[], schema?: object, maxOutputTokens = 65536): Promise<string> {
-  const r = await withRetry((model) => client().models.generateContent({
+  const r = await withRetry((model, ai) => ai.models.generateContent({
     model, contents, config: { responseMimeType: "application/json", maxOutputTokens, ...(schema ? { responseSchema: schema } : {}) },
   }));
   return r.text ?? "";

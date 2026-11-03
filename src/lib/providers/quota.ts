@@ -30,10 +30,8 @@ export function retryDelaySec(msg: string): number | null {
   const n = Number(b[1]);
   return b[2] === "ms" ? n / 1000 : b[2] === "m" ? n * 60 : b[2] === "h" ? n * 3600 : n;
 }
-export function nextUtcMidnight(now = Date.now()): number {
-  const d = new Date(now);
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
-}
+import { nextUtcMidnight } from "./quota-time";
+export { nextUtcMidnight };
 
 async function load(force = false) {
   if (!force && Date.now() - loadedAt < 60_000) return;
