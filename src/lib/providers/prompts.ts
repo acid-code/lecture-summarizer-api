@@ -196,7 +196,7 @@ export function depthTargets(t: Transcript, density: Density = "standard") {
   const long = minutes >= 90;
   if (density === "detailed") {
     const sections = Math.min(long ? 36 : 28, Math.max(4, Math.round(minutes / (long ? 3.5 : 4))));
-    return { minutes: Math.round(minutes), sections, bulletsLo: long ? 6 : 5, bulletsHi: long ? 14 : 12, density };
+    return { minutes: Math.round(minutes), sections, bulletsLo: long ? 5 : 4, bulletsHi: long ? 10 : 8, density };
   }
   if (density === "compact") {
     const sections = Math.min(14, Math.max(3, Math.round(minutes / 10)));
