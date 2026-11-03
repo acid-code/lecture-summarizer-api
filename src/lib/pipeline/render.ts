@@ -188,7 +188,9 @@ bdi{unicode-bidi:isolate}.math,.katex,.katex-display{unicode-bidi:isolate;direct
 .big-picture[dir=rtl]{direction:rtl;text-align:right}.big-picture[dir=ltr]{direction:ltr;text-align:left}.big-picture{border-top:1px solid #E2E8F0;margin-top:2em;padding-top:.5em}.big-picture h2{margin:.6em 0 .3em}.big-picture dl{margin:0}.big-picture dd{margin:0 0 .4em}
 .fig{margin:.5em auto;text-align:center;break-inside:avoid;page-break-inside:avoid}.fig img{display:block;margin:0 auto;max-width:100%;max-height:80mm;object-fit:contain;border:1px solid #E5E7EB;border-radius:8px}.fig figcaption{font-size:.85em;color:#475569;margin-top:.3em}.fig figcaption[dir=rtl]{direction:rtl}`;
 
-export function renderStudyHtml(s: LectureSummary, figures: Figure[] = [], meta: StudyMeta = {}): string {
+export function renderStudyHtml(s0: LectureSummary, figures: Figure[] = [], meta: StudyMeta = {}): string {
+  // Defensive: a summary stored as `[{...}]` (Gemini array wrap) rendered as an empty glossary-only page.
+  const s = (Array.isArray(s0) ? (s0 as unknown[]).find((o) => o && typeof o === "object") ?? {} : s0) as LectureSummary;
   const ok = figures.filter((f) => /^data:image\/[a-z]+;base64,[A-Za-z0-9+/=]{4,}/.test(f.src ?? ""));
   const secs = arr<any>(s.sections);
   const figs = (i: number) => ok.filter((f) => f.section === i || (i === secs.length - 1 && (f.section < 0 || f.section >= secs.length))).map(renderFigure).join("");

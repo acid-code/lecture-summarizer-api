@@ -169,6 +169,14 @@ async function rawJson(contents: (Part | string)[], schema?: object, maxOutputTo
   return r.text ?? "";
 }
 
+/** Gemini sometimes wraps the summary object in a top-level array (`[{title,sections,...}]`); the renderer then saw no
+ * title/sections and emitted a one-page PDF with only the empty glossary heading. Unwrap to the first object. */
+export function unwrapSummary<T>(x: T): T {
+  let v: unknown = x;
+  while (Array.isArray(v) && v.length && typeof v[0] === "object") v = v.find((o) => o && typeof o === "object" && "sections" in o) ?? v[0];
+  return v as T;
+}
+
 function parse<T>(raw: string): T {
   try { return JSON.parse(extractJson(raw)) as T; } catch (e) {
     throw new BadJsonError(`invalid JSON from Gemini (${raw.length} chars): ${(e as Error).message}`, raw);
@@ -366,11 +374,11 @@ export const geminiProvider: AiProvider = {
   },
   async summarize(t, repairs, ctx): Promise<LectureSummary> {
     const prompt = summaryPrompt(t, repairs, ctx);
-    const first = await json<LectureSummary>([prompt]);
+    const first = unwrapSummary(await json<LectureSummary>([prompt]));
     const dn = ctx.density ?? "standard";
     if (ctx.slidesOnly || !summaryTooShort(first, t, dn)) return first;
     console.warn(`summary too short (${spokenSectionCount(first)} sections, target ${depthTargets(t, dn).sections}, ${dn}); retrying with expand`);
-    const second = await json<LectureSummary>([prompt + expandNote(spokenSectionCount(first), t, dn)]).catch(() => null);
+    const second = await json<LectureSummary>([prompt + expandNote(spokenSectionCount(first), t, dn)]).then(unwrapSummary).catch(() => null);
     return second && spokenSectionCount(second) > spokenSectionCount(first) ? second : first;
   },
   hierarchicalStep(t, ctx, state, deadline) {
