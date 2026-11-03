@@ -158,19 +158,60 @@ export function renderFigure(f: Figure): string {
   return `<figure class="fig"><img src="${f.src}" alt="${esc(label)}"><figcaption dir="${he ? "rtl" : "ltr"}">${f.caption ? bidi(f.caption) + " " : ""}<bdi class="cite-inline" dir="ltr">[${esc(label)}]</bdi></figcaption></figure>`;
 }
 
-export function renderStudyHtml(s: LectureSummary, figures: Figure[] = []): string {
+/** Header metadata from the job record (LectureSummary has none). All optional; missing chips are omitted. */
+export interface StudyMeta { course?: string | null; lecture?: string | null; date?: string | null; level?: string | null }
+export const SIGN_OFF = "סוכם אוטומטית מההרצאה והשקפים · בדקו מול החומר הרשמי";
+const fmtDate = (d?: string | null) => { if (!d) return ""; const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d); return m ? `${m[3]}.${m[2]}.${m[1]}` : d; };
+
+/** Branded layout v2 (approved): slim navy/yellow bar, white header + pills, card sections with 01/02 badges, amber key box. */
+const BRAND_CSS = `@page{size:A4;margin:14mm 0 16mm 0}@page:first{margin-top:0}*{box-sizing:border-box}
+body{font-family:"Heebo","IBM Plex Sans Hebrew","Noto Sans Hebrew",Arial,sans-serif;margin:0;color:#1F2937;font-size:10.5pt;line-height:1.7;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.bar{height:6px;background:#0F1F4D;position:relative}.bar:after{content:"";position:absolute;right:0;top:0;height:6px;width:88px;background:#F2B705}
+header{padding:30px 44px 22px}h1{font-size:22pt;line-height:1.25;font-weight:800;color:#0F1F4D;margin:0 0 14px;letter-spacing:-.3px}
+.meta{display:flex;flex-wrap:wrap;gap:8px}.chip{font-size:8.5pt;color:#475569;background:#F1F5F9;border-radius:999px;padding:3px 12px}
+.chip.lvl{background:#0F1F4D;color:#fff;font-weight:600}.chip.lvl b{color:#F2B705}
+main{padding:0 44px}.ov{font-size:11pt;color:#475569;margin:6px 0 24px;max-width:94%}.thin{color:#64748B;font-size:9pt}
+.key{background:#FFFBEB;border:1px solid #FDE68A;border-radius:16px;padding:16px 22px 10px;margin:0 0 28px;break-inside:avoid}
+.kh{font-size:9pt;font-weight:700;color:#0F1F4D;letter-spacing:.5px;display:flex;align-items:center;gap:8px;margin-bottom:4px}.kh:before{content:"";width:18px;height:4px;border-radius:2px;background:#F2B705}
+ul{margin:0;padding:0 18px 0 0}li{margin-bottom:6px}li::marker{color:#94A3B8}p{margin:.35em 0}
+.card{border:1px solid #E5E7EB;border-radius:14px;padding:18px 22px 12px;margin:0 0 16px;box-shadow:0 1px 2px rgba(15,31,77,.04),0 4px 14px rgba(15,31,77,.05)}
+.sh{display:flex;align-items:baseline;gap:10px;margin-bottom:8px;flex-wrap:wrap;break-after:avoid}
+.num{font-size:9pt;font-weight:700;color:#F2B705;background:#0F1F4D;border-radius:6px;padding:1px 7px;direction:ltr}
+h2{font-size:13pt;font-weight:700;color:#0F1F4D;margin:0}h3{color:#1E3A8A;margin:.6em 0 .2em}
+.cite-inline{display:inline-block;unicode-bidi:isolate;direction:ltr;white-space:nowrap;background:#EEF2FF;color:#1E3A8A;border-radius:999px;padding:0 8px;font-size:7.5pt;font-weight:500;margin:0 3px;vertical-align:1px;line-height:1.7}
+.cite{direction:ltr;unicode-bidi:isolate;margin:.4em 0 0}
+.gt{font-size:13pt;font-weight:700;color:#0F1F4D;margin:30px 0 12px}
+dl.gl{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0}.term{background:#F8FAFC;border-radius:12px;padding:10px 14px;break-inside:avoid}
+dt{font-weight:700;color:#1E3A8A;font-size:9.5pt}dd{margin:2px 0 0;font-size:9.5pt;color:#475569;line-height:1.6}
+.sign{margin:30px 0 10px;padding:12px 0 0;border-top:1px solid #E2E8F0;color:#64748B;font-size:9pt;text-align:center}
+bdi{unicode-bidi:isolate}.math,.katex,.katex-display{unicode-bidi:isolate;direction:ltr}bdi.math{display:inline-block}div.math{display:block;text-align:center;margin:.4em 0}.katex{font-size:1.05em}
+.big-picture[dir=rtl]{direction:rtl;text-align:right}.big-picture[dir=ltr]{direction:ltr;text-align:left}.big-picture{border-top:1px solid #E2E8F0;margin-top:2em;padding-top:.5em}.big-picture h2{margin:.6em 0 .3em}.big-picture dl{margin:0}.big-picture dd{margin:0 0 .4em}
+.fig{margin:.5em auto;text-align:center;break-inside:avoid;page-break-inside:avoid}.fig img{display:block;margin:0 auto;max-width:100%;max-height:80mm;object-fit:contain;border:1px solid #E5E7EB;border-radius:8px}.fig figcaption{font-size:.85em;color:#475569;margin-top:.3em}.fig figcaption[dir=rtl]{direction:rtl}`;
+
+export function renderStudyHtml(s: LectureSummary, figures: Figure[] = [], meta: StudyMeta = {}): string {
   const ok = figures.filter((f) => /^data:image\/[a-z]+;base64,[A-Za-z0-9+/=]{4,}/.test(f.src ?? ""));
-  const figs = (i: number) => ok.filter((f) => f.section === i || (i === arr(s.sections).length - 1 && (f.section < 0 || f.section >= arr(s.sections).length))).map(renderFigure).join("");
+  const secs = arr<any>(s.sections);
+  const figs = (i: number) => ok.filter((f) => f.section === i || (i === secs.length - 1 && (f.section < 0 || f.section >= secs.length))).map(renderFigure).join("");
+  const chips = [meta.course, meta.lecture, fmtDate(meta.date)].filter((x) => str(x).trim()).map((x) => `<span class="chip">${bidi(x)}</span>`).join("")
+    + (str(meta.level).trim() ? `<span class="chip lvl">רמה: <b>${bidi(meta.level)}</b></span>` : "");
+  // Key points: first bullet of the first 4 sections (presentation only; summary content unchanged).
+  const keys = secs.slice(0, 4).map((x) => arr(x?.bullets)[0]).filter((b) => str(b).trim());
   return `<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>${esc(s.title)}</title>
 <style>
-@page{size:A4;margin:18mm}body{font-family:"IBM Plex Sans Hebrew","Noto Sans Hebrew","Heebo",Arial,sans-serif;line-height:1.5}p,ul,dl{margin:.35em 0}li{margin:.15em 0}dd{margin:0 0 .3em;margin-inline-start:1em}h2{margin:.9em 0 .3em}h3{margin:.6em 0 .2em}
-bdi{unicode-bidi:isolate;font-family:"Noto Sans","Inter",Arial,sans-serif}.cite{color:#666;font-size:.85em}
-dt{font-weight:bold}h1,h2{line-height:1.3}ul{padding-inline-start:1.2em}.cite{direction:ltr;unicode-bidi:isolate}
-.math,.katex,.katex-display{unicode-bidi:isolate;direction:ltr}bdi.math{display:inline-block}div.math{display:block}.cite-inline{unicode-bidi:isolate;direction:ltr;white-space:nowrap;color:#666;font-size:.85em}div.math{text-align:center;margin:.4em 0}.big-picture[dir=rtl]{direction:rtl;text-align:right}.big-picture[dir=ltr]{direction:ltr;text-align:left}.big-picture{border-top:2px solid #ccc;margin-top:2em;padding-top:.5em;page-break-before:auto}.katex{font-size:1.05em}.fig{margin:.5em auto;text-align:center;break-inside:avoid;page-break-inside:avoid}.fig img{display:block;margin:0 auto;max-width:100%;max-height:80mm;object-fit:contain;border:1px solid #ddd}.fig figcaption{font-size:.85em;color:#444;margin-top:.3em}.fig figcaption[dir=rtl]{direction:rtl}.katex{font-size:1.05em}
+${BRAND_CSS}
 </style></head><body>
-<h1>${bidi(s.title)}</h1>${s.transcript_thin ? `<p class="cite" style="direction:rtl">שימו לב: התמלול של ההקלטה קצר/חסר ביחס לשקפים — חלק מהסיכום מבוסס על השקפים בלבד.</p>` : ""}${arr(s.overview).map((o) => `<p>${bidi(o)}</p>`).join("")}
-${arr<any>(s.sections).map((x, i) => `<h2>${bidi(x.heading)}</h2>${x.style === "prose" ? arr(x.bullets).map((b) => `<p>${bidi(b)}</p>`).join("") : `<ul>${arr(x.bullets).map((b) => `<li>${bidi(b)}</li>`).join("")}</ul>`}${x.citation ? `<p class="cite" dir="ltr"><bdi dir="ltr">${esc(unent(x.citation))}</bdi></p>` : ""}${figs(i)}`).join("\n")}
-<h2>מילון מונחים</h2><dl>${arr<any>(s.glossary).map((g) => `<dt>${bidi(g.term)}</dt><dd>${bidi(g.explanation)}</dd>`).join("")}</dl>
+<div class="bar"></div><header><h1>${bidi(s.title)}</h1>${chips ? `<div class="meta">${chips}</div>` : ""}</header>
+<main>${s.transcript_thin ? `<p class="thin">שימו לב: התמלול של ההקלטה קצר/חסר ביחס לשקפים — חלק מהסיכום מבוסס על השקפים בלבד.</p>` : ""}${arr(s.overview).map((o) => `<p class="ov">${bidi(o)}</p>`).join("")}
+${keys.length ? `<div class="key"><div class="kh">חשוב לזכור</div><ul>${keys.map((b) => `<li>${bidi(b)}</li>`).join("")}</ul></div>` : ""}
+${secs.map((x, i) => `<section class="card"><div class="sh"><span class="num">${String(i + 1).padStart(2, "0")}</span><h2>${bidi(x?.heading)}</h2>${x?.citation ? renderCite(unent(x.citation)) : ""}</div>${x?.style === "prose" ? arr(x.bullets).map((b) => `<p>${bidi(b)}</p>`).join("") : `<ul>${arr(x?.bullets).map((b) => `<li>${bidi(b)}</li>`).join("")}</ul>`}${figs(i)}</section>`).join("\n")}
+<div class="gt">מילון מונחים</div><dl class="gl">${arr<any>(s.glossary).map((g) => `<div class="term"><dt>${bidi(g?.term)}</dt><dd>${bidi(g?.explanation)}</dd></div>`).join("")}</dl>
 ${renderBigPicture(s.big_picture)}
+<div class="sign">${SIGN_OFF}</div></main>
 </body></html>`;
+}
+
+/** Chromium footer (displayHeaderFooter): "עמוד X מתוך Y · כיסוי הקלטה NN%". Coverage omitted when unknown (slides-only). */
+export function studyFooterTemplate(coverageRatio?: number | null): string {
+  const cov = typeof coverageRatio === "number" && isFinite(coverageRatio) ? ` · כיסוי הקלטה ${Math.round(Math.min(1, Math.max(0, coverageRatio)) * 100)}%` : "";
+  return `<div dir="rtl" style="width:100%;font-family:'IBM Plex Sans Hebrew',Arial,sans-serif;font-size:7.5pt;color:#94A3B8;text-align:center;padding:0 44px">עמוד <span class="pageNumber"></span> מתוך <span class="totalPages"></span>${cov}</div>`;
 }

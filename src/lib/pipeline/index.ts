@@ -10,7 +10,7 @@ import { applyRepairs, isTranscriptThin, cleanTranscript } from "../providers/pr
 import { dedupeTranscript } from "../providers/dedupe";
 import { GeminiOverloadedError, overloadHoldMs } from "../providers/overload";
 import { deleteFileUrl, saveArtifact } from "../storage";
-import { renderStudyHtml } from "./render";
+import { renderStudyHtml, studyFooterTemplate } from "./render";
 import { figuresEnabled, pickFigures, lastFigureNote, type SlideDeck } from "../figures";
 import { readFileUrl } from "../storage";
 
@@ -356,9 +356,11 @@ export async function advanceJob(jobId: string) {
       case "pdf": {
         const figures = figuresEnabled() ? await pickFigures(await slideDecks(lecture), a.summary!) : [];
         a.figures = figures.map(({ src: _src, ...f }) => f); a.figuresNote = figuresEnabled() ? lastFigureNote : "FIGURES=off";
-        const html = renderStudyHtml(a.summary!, figures);
+        const siblings = await db.select({ id: schema.lectures.id }).from(schema.lectures).where(eq(schema.lectures.courseId, lecture.courseId)).orderBy(asc(schema.lectures.createdAt)).catch(() => []);
+        const n = siblings.findIndex((r) => r.id === lecture.id) + 1;
+        const html = renderStudyHtml(a.summary!, figures, { course: course?.name, lecture: n ? `הרצאה ${n}` : null, date: lecture.recordedAt ?? new Date(lecture.createdAt).toISOString().slice(0, 10), level: process.env.SUMMARY_LEVEL_LABEL || null });
         a.html = await saveArtifact(`${lecture.id}-study.html`, html, "text/html; charset=utf-8");
-        const pdf = await htmlToPdf(html).catch((e) => { console.warn("pdf render failed, HTML only:", e); return null; });
+        const pdf = await htmlToPdf(html, { footerTemplate: studyFooterTemplate(a.slidesOnly ? null : a.coverage?.ratio) }).catch((e) => { console.warn("pdf render failed, HTML only:", e); return null; });
         a.pdf = pdf ? await saveArtifact(`${lecture.id}-study.pdf`, pdf, "application/pdf") : a.html;
         if (process.env.DELETE_RAW_AUDIO !== "false") { await cleanupAudio(lecture.id); a.audioDeleted = true; }
         break;

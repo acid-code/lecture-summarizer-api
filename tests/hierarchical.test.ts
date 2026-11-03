@@ -28,7 +28,7 @@ test("useHierarchical by ASR span", () => {
 });
 test("prose sections render as paragraphs", () => {
   const h = renderStudyHtml({ title: "t", overview: "o", sections: [{ heading: "h", bullets: ["פסקה"], style: "prose" }], glossary: [] });
-  assert.match(h, /<h2>[^]*?<\/h2><p>/); assert.doesNotMatch(h, /<li>/);
+  const card = h.slice(h.indexOf("<section class=\"card\"")); assert.match(card, /<h2>[^]*?<\/h2><\/div><p>/); assert.doesNotMatch(card.slice(0, card.indexOf("</section>")), /<li>/);
 });
 test("mistral key alias", () => {
   const k = process.env.MISTRAL_API_KEY; delete process.env.MISTRAL_API_KEY; process.env.MISTRAL_API_KRY = "x";
