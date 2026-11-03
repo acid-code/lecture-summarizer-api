@@ -9,7 +9,7 @@ import { NO_NIQQUD } from "./prompts";
 
 export type JsonFn = <T = any>(prompt: string, opts?: { strong?: boolean }) => Promise<T>;
 export const HIER_PART_SEC = 600;
-export const HIER_MIN_WORDS = 250;
+export const HIER_MIN_WORDS = 350;
 export const HIER_MAX_CHASHUV = 12;
 
 const mmss = (s: number) => { s = Math.round(s); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
@@ -56,7 +56,7 @@ export async function hierarchicalStep(tr: Transcript, ctx: LectureContext, J: J
     const batch = windows.slice(st.parts.length, st.parts.length + CONC());
     const got = await Promise.all(batch.map(async (w) => ({ ...(await Jc(`You are extracting study notes from part of a Hebrew university lecture ("${title}"), lecture time ${w.label}.
 Return JSON {"part":"${w.label}","topics":[{"name","t_start","t_end","summary"}],"definitions":[{"term_en","term_he","definition","t"}],"theorems_or_rules":[{"statement","t"}],"examples":[{"description","details","t"}],"professor_emphasis":[{"quote_or_paraphrase","t"}],"exam_hints":[{"hint","t"}],"numbers_and_specifics":[{"fact","t"}]}.
-Use only times (M:SS) that appear in the transcript. Hebrew text, keep English technical terms in English. ${NO_NIQQUD} Be exhaustive: every topic and concrete detail in this part. professor_emphasis / exam_hints: only what the lecturer EXPLICITLY stresses ("this is important", "will be on the exam") — usually 0-2 per part.
+Use only times (M:SS) that appear in the transcript. Hebrew text, keep English technical terms in English. ${NO_NIQQUD} Capture every distinct topic, definition, rule, procedure, worked example (setup+method+result) and number that matters in this part — as concise notes, not a retelling; skip admin chatter, jokes and repetitions. professor_emphasis / exam_hints: only what the lecturer EXPLICITLY stresses ("this is important", "will be on the exam") — usually 0-2 per part.
 Slide hints (spelling only): ${slides}
 TRANSCRIPT:
 ${w.text}`)), part: w.label })));
@@ -66,7 +66,8 @@ ${w.text}`)), part: w.label })));
   // 2) outline
   if (!st.outline) {
     if (!timeLeft()) return null;
-    const nSec = Math.max(6, Math.round(end / 60 / 9));
+    const dn = ctx.density ?? "standard";
+    const nSec = Math.max(dn === "compact" ? 3 : 5, Math.round(end / 60 / (dn === "compact" ? 15 : dn === "detailed" ? 9 : 11)));
     st.outline = await Jc(`Build a study-guide outline for the lecture "${title}" (${mmss(0)}-${mmss(end)}) from these per-part notes. Sections must follow lecture order and together cover the FULL timeline (every part with real content belongs to some section; no gap >8 minutes except parts with no lecture content). ~${nSec} sections.
 Return JSON {"title","overview","sections":[{"heading","t_start","t_end","parts":["M:SS-M:SS"],"must_include":["..."]}]}.
 - "title": a real, specific HEBREW lecture title describing the main topics (English technical terms allowed inline)${genericTitle(title) ? "" : `; the course/lecture is "${title}" — keep that course name as prefix`}. Never a date or "Lecture - …".
@@ -78,23 +79,25 @@ NOTES: ${JSON.stringify(parts)}`);
   const outline = st.outline;
   // 3) sections
   st.sections ??= [];
+  const dn = ctx.density ?? "standard";
+  const band = dn === "compact" ? { lo: 120, hi: 250, paras: "2-3", min: 80 } : dn === "detailed" ? { lo: 450, hi: 750, paras: "3-7", min: HIER_MIN_WORDS } : { lo: 220, hi: 420, paras: "2-5", min: 150 };
   const writeSection = async (sec: any): Promise<LectureSummary["sections"][number] | null> => {
     const rel = parts.filter((p) => (sec.parts ?? []).includes(p.part));
     const a = Math.max(0, (toSec(sec.t_start) ?? 0) - 30), b = (toSec(sec.t_end) ?? end) + 30;
     const raw = segs.filter((x) => x.start >= a && x.start <= b).map((x) => `[t=${mmss(x.start)}] ${x.text}`).join("\n");
     if (!raw.trim()) return null;
     const prompt = `Write ONE section of a Hebrew study guide for "${title}". Heading: "${sec.heading}" (lecture ${sec.t_start}-${sec.t_end}).
-Write 300-500 words of clear Hebrew PROSE with English technical terms inline (code-switch), split into 3-6 SHORT paragraphs (2-4 short sentences each, one idea per paragraph). Readers found earlier sections too packed with words: use short direct sentences, no long clause chains, no filler openers, no restating the heading. Each paragraph ends with a [t=M:SS] or [t=M:SS-M:SS] citation using only times from the transcript. Cover must_include: ${JSON.stringify(sec.must_include ?? [])}.
-Explain the reasoning and intuition; keep the key examples/numbers, skip minor asides. At most ONE paragraph may start with "חשוב: " and only if the lecturer explicitly stressed it; otherwise do not use the word "חשוב". Formulas in \\( \\). ${NO_NIQQUD} No filler.
+Write ${band.lo}-${band.hi} words of Hebrew study notes as short explanatory paragraphs with English technical terms inline (code-switch), split into ${band.paras} paragraphs. Each paragraph ends with a [t=M:SS] or [t=M:SS-M:SS] citation using only times from the transcript. Cover must_include: ${JSON.stringify(sec.must_include ?? [])}.
+This is a STUDY SUMMARY, not a retelling: never paraphrase the speech sentence by sentence. Distill definitions, rules, procedures, the key example (setup+method+result) and the numbers that matter; drop admin, anecdotes, repetitions.${dn === "detailed" ? " Explain reasoning and intuition where the lecturer did." : ""} At most ONE paragraph may start with "חשוב: " and only if the lecturer explicitly stressed it; otherwise do not use the word "חשוב". Formulas in \\( \\). ${NO_NIQQUD} No filler.
 Return JSON {"heading","paragraphs":[string],"citation":"[t=..]"}.
 STRUCTURED NOTES: ${JSON.stringify(rel)}
 TRANSCRIPT EXCERPT:
 ${raw}`;
     let r: any = await Jc(prompt);
     let w = words(r.paragraphs ?? []);
-    if (w < HIER_MIN_WORDS) {
+    if (w < band.min) {
       log(`hier section "${sec.heading}" only ${w} words; retrying`);
-      const r2: any = await Jc(prompt + `\n\nYour previous answer was only ${w} words — too short. Write at least 300 words by covering more of what the lecturer explained (derivations, examples) — keep sentences short.`, { strong: true }).catch(() => null);
+      const r2: any = await Jc(prompt + `\n\nYour previous answer was only ${w} words — too short. Write at least ${band.lo} words covering the topics in must_include — concise notes, not a retelling.`, { strong: true }).catch(() => null);
       if (r2 && words(r2.paragraphs ?? []) > w) { r = r2; w = words(r2.paragraphs ?? []); }
     }
     log(`hier section "${sec.heading}" ${w}w`);

@@ -37,7 +37,7 @@ async function launch() {
   return puppeteer.launch({ executablePath: exe, headless: true, args: ["--no-sandbox", "--disable-gpu"] });
 }
 
-export async function htmlToPdf(html: string): Promise<Buffer | null> {
+export async function htmlToPdf(html: string, opts: { footerTemplate?: string } = {}): Promise<Buffer | null> {
   if (process.env.PDF_RENDERER === "html") return null;
   const browser = await launch().catch((e) => { console.error("pdf: browser launch failed", e); return null; });
   if (!browser) return null;
@@ -46,7 +46,7 @@ export async function htmlToPdf(html: string): Promise<Buffer | null> {
     const withFont = html.replace("<style>", () => `<style>${embeddedFontCss()}`);
     await page.setContent(withFont, { waitUntil: "load" });
     await page.evaluateHandle("document.fonts.ready");
-    return Buffer.from(await page.pdf({ format: "A4", printBackground: true, preferCSSPageSize: true }));
+    return Buffer.from(await page.pdf({ format: "A4", printBackground: true, preferCSSPageSize: true, ...(opts.footerTemplate ? { displayHeaderFooter: true, headerTemplate: "<span></span>", footerTemplate: opts.footerTemplate } : {}) }));
   } finally {
     await browser.close();
   }

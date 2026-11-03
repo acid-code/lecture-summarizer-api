@@ -5,12 +5,13 @@ import { db, ensureDb, schema } from "@/db";
 import { STAGES, type Stage } from "@/db/schema";
 import { retrieveExcerpts } from "../context";
 import { htmlToPdf } from "../pdf";
+import { parseDensity, type Density } from "../providers/types";
 import { getProvider, type AudioInput, type LectureContext, type Repair, type Transcript, type LectureSummary } from "../providers";
 import { applyRepairs, isTranscriptThin, cleanTranscript } from "../providers/prompts";
 import { dedupeTranscript } from "../providers/dedupe";
 import { GeminiOverloadedError, overloadHoldMs } from "../providers/overload";
 import { deleteFileUrl, saveArtifact } from "../storage";
-import { renderStudyHtml } from "./render";
+import { renderStudyHtml, studyFooterTemplate } from "./render";
 import { figuresEnabled, pickFigures, lastFigureNote, type SlideDeck } from "../figures";
 import { readFileUrl } from "../storage";
 
@@ -19,6 +20,8 @@ export interface Artifacts {
   summary?: LectureSummary; /** resumable hierarchical-summary state (long lectures) */ hier?: HierState; hierFailed?: string; summaryMode?: "hierarchical" | "single"; /** figures embedded in the PDF (metadata only) */ figures?: { page: number; deck?: string; section: number; caption: string }[]; figuresNote?: string; html?: string; pdf?: string; audioDeleted?: boolean;
   /** No audio on the server: summary built from lecture slides/PDFs (or course files) only; ASR+repair skipped. */
   slidesOnly?: boolean;
+  /** Job options from /process or resummarize. density = summary level; densities = extra levels to spawn after done. */
+  options?: { live?: boolean; density?: Density; densities?: Density[]; source?: string; [k: string]: unknown };
   /** Where the ASR came from: our audio ASR (unset) or an imported external transcript (e.g. "panopto"). */
   asrSource?: string; asrExternalId?: string;
   /** Detail about the next/current unit of work, for client progress text. */
@@ -98,11 +101,33 @@ export function resumeStage(a: Artifacts): Stage {
  * Re-run summary+pdf only: clears summary/html/pdf, keeps asr/repair (no ASR quota spent).
  * Allowed for done/failed jobs (or any with ?force). Requires a complete ASR.
  */
-export async function resummarizeJob(jobId: string, force = false): Promise<RetryResult> {
+/** Summary level of a job; jobs created before density existed were the exhaustive style → "detailed". */
+export function jobDensity(a: Artifacts): Density {
+  return parseDensity(a.options?.density) ?? (a.summary && !a.options?.density ? "detailed" : "standard");
+}
+
+/** New job for the same lecture at `density`, starting from the done job's ASR+repair (summary/pdf cleared). */
+async function cloneForDensity(lectureId: string, src: Artifacts, density: Density) {
+  const a: Artifacts = JSON.parse(JSON.stringify(src));
+  delete a.summary; delete a.html; delete a.pdf; delete a.hier; delete a.hierFailed; delete a.figures; delete a.coverage; delete a.coverageBefore;
+  a.options = { ...(a.options ?? {}), density, densities: undefined, live: false };
+  const stage = resumeStage(a); a.progressDetail = { stage, label: stageLabel(stage) };
+  const job_id = crypto.randomUUID();
+  const [row] = await db.insert(schema.jobs).values({ id: job_id, lectureId, stage, artifacts: JSON.stringify(a), updatedAt: Date.now() }).returning();
+  return row;
+}
+
+/** Resummarize. With a density different from the job's, a NEW job is created so each level keeps its own summary. */
+export async function resummarizeJob(jobId: string, force = false, density?: Density): Promise<RetryResult> {
   await ensureDb();
   const job = await db.query.jobs.findFirst({ where: eq(schema.jobs.id, jobId) });
   if (!job) return { ok: false, reason: "not_found" };
   const a = JSON.parse(job.artifacts) as Artifacts;
+  if (density && density !== jobDensity(a) && a.asrComplete) {
+    await withSiblingAsr(job.lectureId, jobId, a);
+    return { ok: true, job: await cloneForDensity(job.lectureId, a, density) };
+  }
+  if (!a.options?.density) a.options = { ...(a.options ?? {}), density: jobDensity(a) };
   const stuck = Date.now() - job.updatedAt > STUCK_MS;
   // Incomplete terminal work (summary/pdf missing, e.g. a crashed/timed-out summary call) is always restartable.
   const incomplete = !!a.asrComplete && (!a.summary || !a.pdf) && a.progressDetail?.stage !== job.stage; // honest in-flight work still needs stuck/force
@@ -221,6 +246,8 @@ export async function retryJob(jobId: string, force = false): Promise<RetryResul
  * ASR runs up to ASR_PARALLEL windows/segments per call in parallel (stays in "asr" until all segments are transcribed).
  * Stages are idempotent: artifacts are stored per stage, so a failed job can be re-advanced.
  */
+const DENSITY_LABEL: Record<string, string> = { compact: "תמציתי", standard: "רגיל", detailed: "מפורט" };
+
 export async function advanceJob(jobId: string) {
   await ensureDb();
   const job = await db.query.jobs.findFirst({ where: eq(schema.jobs.id, jobId) });
@@ -237,6 +264,7 @@ export async function advanceJob(jobId: string) {
   delete a.holdUntil;
   const ai = getProvider();
   if (a.slidesOnly) { ctx.slidesOnly = true; ctx.slidesText = materialsText(lecture, course); }
+  ctx.density = jobDensity(a);
 
   const current: Stage = job.stage === "failed" ? resumeStage(a) : job.stage;
   let next = STAGES[STAGES.indexOf(current) + 1] as Stage | undefined;
@@ -356,10 +384,12 @@ export async function advanceJob(jobId: string) {
       case "pdf": {
         const figures = figuresEnabled() ? await pickFigures(await slideDecks(lecture), a.summary!) : [];
         a.figures = figures.map(({ src: _src, ...f }) => f); a.figuresNote = figuresEnabled() ? lastFigureNote : "FIGURES=off";
-        const html = renderStudyHtml(a.summary!, figures);
-        a.html = await saveArtifact(`${lecture.id}-study.html`, html, "text/html; charset=utf-8");
-        const pdf = await htmlToPdf(html).catch((e) => { console.warn("pdf render failed, HTML only:", e); return null; });
-        a.pdf = pdf ? await saveArtifact(`${lecture.id}-study.pdf`, pdf, "application/pdf") : a.html;
+        const siblings = await db.select({ id: schema.lectures.id }).from(schema.lectures).where(eq(schema.lectures.courseId, lecture.courseId)).orderBy(asc(schema.lectures.createdAt)).catch(() => []);
+        const n = siblings.findIndex((r) => r.id === lecture.id) + 1;
+        const html = renderStudyHtml(a.summary!, figures, { course: course?.name, lecture: n ? `הרצאה ${n}` : null, date: lecture.recordedAt ?? new Date(lecture.createdAt).toISOString().slice(0, 10), level: DENSITY_LABEL[jobDensity(a)] ?? DENSITY_LABEL.standard });
+        a.html = await saveArtifact(`${lecture.id}-${jobId}-study.html`, html, "text/html; charset=utf-8");
+        const pdf = await htmlToPdf(html, { footerTemplate: studyFooterTemplate(a.slidesOnly ? null : a.coverage?.ratio) }).catch((e) => { console.warn("pdf render failed, HTML only:", e); return null; });
+        a.pdf = pdf ? await saveArtifact(`${lecture.id}-${jobId}-study.pdf`, pdf, "application/pdf") : a.html;
         if (process.env.DELETE_RAW_AUDIO !== "false") { await cleanupAudio(lecture.id); a.audioDeleted = true; }
         break;
       }
@@ -370,6 +400,12 @@ export async function advanceJob(jobId: string) {
     delete a.overloadHolds;
     const ns = next ?? "done";
     if (ns !== "asr" || current !== "asr") a.progressDetail = { stage: ns, label: stageLabel(ns) + (a.asrIncomplete ? " · ASR incomplete — reprocess needed" : "") };
+    // Multi-density request: once the first summary is done, spawn one sibling job per extra level (reuses ASR+repair).
+    if (ns === "done" && a.options?.densities?.length) {
+      const extra = a.options.densities.filter((x) => x !== jobDensity(a));
+      a.options = { ...a.options, densities: undefined };
+      for (const d of extra) await cloneForDensity(job.lectureId, a, d);
+    }
     const [row] = await db.update(schema.jobs)
       .set({ stage: next ?? "done", artifacts: JSON.stringify(a), error: null, updatedAt: Date.now() })
       .where(eq(schema.jobs.id, jobId)).returning();
