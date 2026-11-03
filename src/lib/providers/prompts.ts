@@ -194,7 +194,7 @@ export function depthTargets(t: Transcript) {
   const minutes = segs.length ? Math.max(1, (Math.max(...segs.map((x) => x.end)) - Math.min(...segs.map((x) => x.start))) / 60) : 0;
   const long = minutes >= 90;
   const sections = Math.min(long ? 36 : 28, Math.max(4, Math.round(minutes / (long ? 3.5 : 4))));
-  return { minutes: Math.round(minutes), sections, bulletsLo: long ? 6 : 5, bulletsHi: long ? 14 : 12 };
+  return { minutes: Math.round(minutes), sections, bulletsLo: long ? 5 : 4, bulletsHi: long ? 10 : 8 };
 }
 
 /** Coverage + professor-emphasis rules: summaries were too short and dropped distinct subjects / specific details. */
@@ -206,8 +206,12 @@ export function depthBlock(t: Transcript) {
 - The transcript below spans the whole ~${d.minutes} minutes of speech. Sections must cover it end to end;
   [t=…] citations should be spread across the full time range, not concentrated in one window.
 - HARD MINIMUM for this ~${d.minutes}-minute lecture: at least ${d.sections} spoken-topic sections (more if the lecture changes subject often), each with
-  ${d.bulletsLo}-${d.bulletsHi} bullets. Each bullet is 1-3 full, information-dense sentences — explanation + the specific detail, not a headline.
-- Keep the SPECIFICS the lecturer gave: exact numbers, values, units, thresholds, named examples, experiments, names, dates,
+  ${d.bulletsLo}-${d.bulletsHi} bullets.
+- READABILITY (summaries were too packed with words — keep them lean and scannable): ONE idea per bullet, 1-2 SHORT
+  sentences (aim ≤25 words, hard max ~40). Lead with the key term or claim, then the detail ("מונח — הסבר קצר").
+  No chains of clauses, no stacking several facts with commas/semicolons into one bullet — split them or drop the minor one.
+  Plain, direct Hebrew; no introductory phrases ("המרצה הסביר ש…", "חשוב לציין כי…", "בנוסף לכך"); never restate the heading.
+- Keep the SPECIFICS that matter for studying: exact numbers, values, units, thresholds, named examples, experiments, names, dates,
   step-by-step procedures, formula derivations, comparisons ("X vs Y"), exceptions and edge cases. Prefer the concrete detail over a generic paraphrase.
 - PROFESSOR'S KEY NOTES — scan the transcript for what the lecturer stressed and never drop it: phrases like "חשוב", "שימו לב",
   "זה יהיה במבחן"/"למבחן", "תזכרו", "הנקודה המרכזית", "טעות נפוצה", "important", "note that", "key point", repetition of the
@@ -218,7 +222,7 @@ export function depthBlock(t: Transcript) {
 - Definitions said aloud go both in the relevant bullet AND in the glossary (glossary: every technical term defined or used centrally; aim 8-25 entries).
 - "overview": 4-6 sentences listing the main subjects in order.
 - Not rambling: no filler, no repeating the same point in two sections, no generic textbook material the lecturer did not say.
-  Length should come from more covered content and specifics, never from wordiness.`;
+  Length should come from more covered topics, never from wordiness or longer bullets. When in doubt, shorter.`;
 }
 
 export function summaryPrompt(t: Transcript, repairs: Repair[], ctx: LectureContext) {
@@ -295,6 +299,6 @@ export function expandNote(prevSections: number, t: Transcript): string {
   const d = depthTargets(t);
   return `\n\nIMPORTANT — YOUR PREVIOUS ANSWER WAS FAR TOO SHORT (${prevSections} sections for a ~${d.minutes}-minute lecture). ` +
     `Rewrite it from the FULL transcript (beginning, middle AND end): at least ${d.sections} spoken-topic sections with ` +
-    `${d.bulletsLo}-${d.bulletsHi} dense bullets each, plus "דגשים חשובים של המרצה" and a glossary of 8-25 terms. ` +
-    `Add more topics and concrete details the lecturer said — no filler, no repetition.`;
+    `${d.bulletsLo}-${d.bulletsHi} short, one-idea bullets each, plus "דגשים חשובים של המרצה" and a glossary of 8-25 terms. ` +
+    `Add more topics the lecturer covered — keep each bullet short; no filler, no repetition.`;
 }

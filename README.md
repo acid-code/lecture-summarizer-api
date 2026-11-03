@@ -135,6 +135,8 @@ Legacy `/api/*` routes (web scaffold: `/api/courses`, `/api/jobs/{id}/advance`, 
 
   On 429 / `RESOURCE_EXHAUSTED` the next rung is tried immediately (no backoff); a model that hits a daily limit is skipped for 1 h in that process. 500/503 get jittered backoff (`GEMINI_RETRIES`, default 5; total wait capped by `GEMINI_RETRY_BUDGET_MS`, default 90 s). If every rung is out of quota the job goes `failed` with `error: "<stage>: Gemini free daily quota exhausted; retry after reset"` (no raw JSON). Override with `GEMINI_MODEL` (first rung) and `GEMINI_FALLBACK_MODELS` (comma list replacing the rest). Call `POST /v1/jobs/{id}/retry` after reset (the Android Retry button does this).
 
+  **503 / overloaded ("high demand")** is handled separately from quota: exponential backoff + jitter on the same model (`GEMINI_OVERLOAD_RETRIES`, default 3; base `GEMINI_OVERLOAD_BASE_MS`, default 2000), then fallback to `GEMINI_FALLBACK_MODEL` (default `gemini-3.1-flash-lite`; set empty to just use the next ladder rung), then the other rungs. Keys are not rotated for overload. If everything stays overloaded the job is **held, not failed**: it keeps its stage (state `running`, `error: null`, `progress_detail.label` "Gemini busy (high demand) — auto-retry in N min") and polls are no-ops until the hold expires (jittered backoff from `GEMINI_OVERLOAD_HOLD_MS`, default 60 s, capped 15 min). After `GEMINI_OVERLOAD_MAX_HOLDS` (default 8) consecutive holds it goes `failed` as before. Logs show model, key index/hash (never the key), attempt and fallback.
+
 Full job script: `scripts/mock-job.sh [base] [audio] [context.pdf] [slides.pdf]` — see TEST.md.
 
 ## Lecture materials (several files per lecture) — 2026-10
