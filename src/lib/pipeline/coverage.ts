@@ -103,8 +103,11 @@ export function mergeTranscripts(base: Transcript, extras: (Transcript | undefin
 export function asrCompleteness(t: Transcript | undefined, uploadedSec: number) {
   const end = asrSpan(t)?.[1] ?? 0;
   const spoken = spokenIntervals(t, 180).reduce((n, [a, b]) => n + b - a, 0);
-  const ratio = uploadedSec > 0 ? Math.min(end, spoken + 180) / uploadedSec : 1;
-  return { asrEndSec: Math.round(end), spokenSec: Math.round(spoken), uploadedSec: Math.round(uploadedSec), ratio: Math.round(ratio * 1000) / 1000, incomplete: uploadedSec > 0 && ratio < ASR_MIN_RATIO };
+  // Primary signal: transcript end vs uploaded duration (silences/pauses inside the lecture are normal).
+  const ratio = uploadedSec > 0 ? end / uploadedSec : 1;
+  // Secondary: gross missing start/middle (e.g. a lost recording session) — speech covers under half the audio.
+  const spokenRatio = uploadedSec > 0 ? (spoken + 180) / uploadedSec : 1;
+  return { asrEndSec: Math.round(end), spokenSec: Math.round(spoken), uploadedSec: Math.round(uploadedSec), ratio: Math.round(ratio * 1000) / 1000, incomplete: uploadedSec > 0 && (ratio < ASR_MIN_RATIO || spokenRatio < 0.5) };
 }
 
 export const fmtWin = ([a, b]: [number, number]) => `${clock(a)}-${clock(b)}`;

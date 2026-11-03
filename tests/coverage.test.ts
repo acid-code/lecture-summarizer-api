@@ -55,3 +55,8 @@ test("mergeSiblingArtifacts merges earlier session into asr, asrRaw and repaired
   assert.equal(mergeSiblingArtifacts(a, [{ asrComplete: true, asr: early, repaired: early } as any, undefined]), 300);
   for (const k of ["asr", "asrRaw", "repaired"]) assert.equal(a[k].segments[0].start, 0);
 });
+test("ASR ~99% end with pauses is not incomplete", async () => {
+  const { asrCompleteness } = await import("../src/lib/pipeline/coverage");
+  const segs = Array.from({ length: 100 }, (_, i) => ({ start: i * 50, end: i * 50 + 20, text: "x" }));
+  assert.equal(asrCompleteness({ language: "he", segments: segs } as any, 5000).incomplete, false);
+});

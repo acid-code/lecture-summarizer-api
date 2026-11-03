@@ -238,7 +238,7 @@ function emphasisRules(d: ReturnType<typeof depthTargets>) {
   const n = d.density === "compact" ? "3-8" : d.density === "detailed" ? "5-15" : "4-10";
   return `- PROFESSOR'S KEY NOTES — keep what the lecturer explicitly stressed ("חשוב", "שימו לב", "למבחן", "תזכרו", "טעות נפוצה", "important",
   repetition, explicit definitions, warnings, exam/homework hints). Start such bullets with "חשוב: ". Also add a section titled
-  "דגשים חשובים של המרצה" (right after the spoken sections, before "סיכום מהמצגת") with ${n} of the most important such notes, each cited [t=…]; exam/homework hints first.
+  "דגשים חשובים של המרצה" (right after the spoken sections, before "סיכום מהמצגת" if present) with ${n} of the most important such notes, each cited [t=…]; exam/homework hints first.
 - Definitions said aloud go in the glossary (Hebrew + English term; aim ${d.density === "compact" ? "5-15" : "8-25"} entries).
 - "overview": ${d.density === "compact" ? "2-4" : "3-6"} sentences listing the main subjects in order.
 - No filler, no repeating a point in two sections, no generic textbook material the lecturer did not say.`;
@@ -248,6 +248,7 @@ export function summaryPrompt(t: Transcript, repairs: Repair[], ctx: LectureCont
   if (ctx.slidesOnly) return slidesOnlyPrompt(ctx);
   const text = t.segments.map((s) => s.text).join(" ");
   const thin = isTranscriptThin(t, ctx.slidesText);
+  const hasSlides = !!ctx.slidesText?.trim();
   return `Write a structured study summary in Hebrew (keep English technical terms in English) for the lecture "${ctx.title}".
 SOURCE PRIORITY (strict) — the VOICE/transcript leads, slides only support it:
 1. PRIMARY = the repaired lecture transcript below (what the lecturer actually SAID). Build the summary around it:
@@ -256,12 +257,12 @@ SOURCE PRIORITY (strict) — the VOICE/transcript leads, slides only support it:
 2. SUPPORTING = slides. Use them only to clarify terms/spelling, formulas, definitions, structure and diagrams for what was said.
    Do NOT reorganize the summary by slide order and do NOT give slide-only bullets equal weight: slide material that was not
    discussed goes in briefly (one short bullet, or the glossary), never as the backbone of a section.
-2b. IMPORTANT SLIDE CONTENT must not be lost even though slides are secondary: harvest the slides' key definitions and key
+${hasSlides ? `2b. IMPORTANT SLIDE CONTENT must not be lost even though slides are secondary: harvest the slides' key definitions and key
    points into the matching spoken sections (cite [slide N], or [t=…, slide N] when also spoken), and ALWAYS add one final
    section titled "סיכום מהמצגת" (from the slides) built from the deck's CLOSING / summary / conclusion / take-home slides
    (usually the last few slides, shown in full below under "FINAL SLIDES") — include their points even if they were only
    lightly spoken or not spoken at all, each cited [slide N] (+ [t=…] when spoken). Keep it focused (about 3-10 bullets);
-   do not turn the whole slide outline into sections.
+   do not turn the whole slide outline into sections.` : `2b. NO SLIDES were provided for this lecture: do NOT add a "סיכום מהמצגת" section, never cite [slide N], never mention a presentation.`}
 3. BACKGROUND = course-pack excerpts — terminology/definitions only; never add topics not covered in this lecture.
 CITATIONS (mixed, required):
 - Spoken content MUST be cited with lecture time from the transcript, e.g. [t=4:35] (or a range [t=4:35-6:10]).
@@ -321,4 +322,11 @@ export function expandNote(prevSections: number, t: Transcript, density: Density
     `Rewrite it from the FULL transcript (beginning, middle AND end): about ${d.sections} spoken-topic sections with ` +
     `${d.bulletsLo}-${d.bulletsHi} bullets each, plus "דגשים חשובים של המרצה" and a glossary. ` +
     `Add the missing TOPICS — keep bullets concise study notes, never a sentence-by-sentence retelling.`;
+}
+
+/** No slides → drop any invented slides-summary section and stray [slide N] cites. */
+export function stripSlideArtifacts<T extends { sections?: { heading?: string; bullets?: string[]; citation?: string }[] }>(s: T, hasSlides: boolean): T {
+  if (hasSlides || !s?.sections) return s;
+  const clean = (x?: string) => x?.replace(/\s*\[slides?\s[^\[\]]*\]/gi, "").replace(/,\s*slides?\s+[\d,\s-]+(?=\])/gi, "");
+  return { ...s, sections: s.sections.filter((x) => !/סיכום מהמצגת/.test(x.heading ?? "")).map((x) => ({ ...x, citation: clean(x.citation), bullets: x.bullets?.map((b) => clean(b)!) })) };
 }

@@ -7,7 +7,7 @@ import { retrieveExcerpts } from "../context";
 import { htmlToPdf } from "../pdf";
 import { parseDensity, type Density } from "../providers/types";
 import { getProvider, type AudioInput, type LectureContext, type Repair, type Transcript, type LectureSummary } from "../providers";
-import { applyRepairs, isTranscriptThin, cleanTranscript } from "../providers/prompts";
+import { applyRepairs, isTranscriptThin, cleanTranscript, stripSlideArtifacts } from "../providers/prompts";
 import { dedupeTranscript } from "../providers/dedupe";
 import { deleteFileUrl, saveArtifact } from "../storage";
 import { renderStudyHtml } from "./render";
@@ -366,9 +366,9 @@ export async function advanceJob(jobId: string) {
             const extra = await ai.summarize(sliceTranscript(tr, wins), a.repair ?? [], { ...ctx, title: `${ctx.title} (missing parts: ${wins.map(fmtWin).join(", ")})` }).catch((e) => { console.warn("gap fill failed:", (e as Error).message); return null; });
             if (extra) a.summary = mergeGapSections(a.summary, extra);
           }
-          a.summary = fixBackwardRanges(a.summary);
+          a.summary = stripSlideArtifacts(fixBackwardRanges(a.summary), !!ctx.slidesText?.trim());
           a.coverage = computeCoverage(tr, a.summary);
-        } else a.summary = fixBackwardRanges(a.summary);
+        } else a.summary = stripSlideArtifacts(fixBackwardRanges(a.summary), !!ctx.slidesText?.trim());
         // Server-side truth wins over the model's flag.
         a.summary.transcript_thin = a.slidesOnly ? false : isTranscriptThin(tr, ctx.slidesText) || !!a.summary.transcript_thin;
         break;
