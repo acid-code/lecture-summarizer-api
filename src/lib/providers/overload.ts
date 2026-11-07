@@ -1,6 +1,7 @@
 /**
  * Gemini error classification + overload (503) backoff/fallback policy. Pure functions so they are unit-testable.
- *  - overloaded: 503 / UNAVAILABLE / "high demand" / overloaded → backoff on the same model, then fall back to another model.
+ *  - overloaded: 503 / UNAVAILABLE / "high demand" / overloaded → switch to the alternate model at once; if it is busy too,
+ *    return to the primary with backoff and alternate again; finally soft-hold the job (pipeline) — never fail it.
  *    Never rotates keys (an overloaded model is overloaded for every key).
  *  - daily_quota / rpm: 429 RESOURCE_EXHAUSTED → existing ladder + multi-key failover (quota.ts / keys.ts).
  *  - auth: invalid / revoked key → try the next key.

@@ -29,7 +29,30 @@ export interface Artifacts {
   /** Gemini 503 soft hold: advance is a no-op until this epoch ms; overloadHolds counts consecutive holds. */
   holdUntil?: number;
   overloadHolds?: number;
+  /** Heavy-stage run lease: set (and persisted) before repair/summary/pdf work starts, cleared when the invocation writes back. */
+  run?: { stage: string; n: number; at: number };
 }
+
+/**
+ * Silent-stall guard. A Vercel invocation killed at maxDuration (long summary / Chromium PDF) never reaches the catch, so the
+ * job used to sit in "summary"/"pdf" forever with no error. Now each heavy run takes a lease first:
+ *  - a run of the same stage started < RUN_LEASE_MS ago (and not superseded by a retry) is still in flight → don't start a 2nd;
+ *  - an expired lease means the previous invocation died → re-run (auto-requeue), up to MAX_STAGE_RUNS, then fail with a real error.
+ */
+export const RUN_LEASE_MS = Number(process.env.JOB_RUN_LEASE_MS || 330_000);
+export const MAX_STAGE_RUNS = Number(process.env.JOB_MAX_STAGE_RUNS || 3);
+export function stageRunDecision(run: Artifacts["run"], stage: string, jobUpdatedAt: number, now = Date.now()):
+  { action: "busy" } | { action: "fail"; runs: number } | { action: "run"; n: number } {
+  const same = run && run.stage === stage && jobUpdatedAt <= run.at; // a retry/reset bumps updatedAt past the lease → fresh
+  if (!same) return { action: "run", n: 1 };
+  if (now - run!.at < RUN_LEASE_MS) return { action: "busy" };
+  if (run!.n >= MAX_STAGE_RUNS) return { action: "fail", runs: run!.n };
+  return { action: "run", n: run!.n + 1 };
+}
+const withTimeout = <T,>(p: Promise<T>, ms: number, what: string) => new Promise<T>((res, rej) => {
+  const t = setTimeout(() => rej(new Error(`${what} timed out after ${Math.round(ms / 1000)}s`)), ms);
+  p.then((v) => { clearTimeout(t); res(v); }, (e) => { clearTimeout(t); rej(e); });
+});
 
 export interface ProgressDetail {
   stage: string; label: string; part?: number; parts?: number; window?: number; windows?: number | null;
@@ -268,6 +291,22 @@ export async function advanceJob(jobId: string) {
 
   const current: Stage = job.stage === "failed" ? resumeStage(a) : job.stage;
   let next = STAGES[STAGES.indexOf(current) + 1] as Stage | undefined;
+  if (current === "repair" || current === "summary" || current === "pdf") {
+    const d = stageRunDecision(a.run, current, job.updatedAt);
+    if (d.action === "busy") return job;
+    if (d.action === "fail") {
+      delete a.run;
+      const err = `${current}: stalled — ${d.runs} runs never finished (invocation timed out/crashed); retry to resume`;
+      console.error(`job ${jobId} ${err}`);
+      const [row] = await db.update(schema.jobs).set({ stage: "failed", error: err, artifacts: JSON.stringify(a), updatedAt: Date.now() })
+        .where(eq(schema.jobs.id, jobId)).returning();
+      return row;
+    }
+    if (d.n > 1) console.warn(`job ${jobId} ${current}: previous run never finished — auto re-run ${d.n}/${MAX_STAGE_RUNS}`);
+    const at = Date.now();
+    a.run = { stage: current, n: d.n, at };
+    await db.update(schema.jobs).set({ artifacts: JSON.stringify(a), updatedAt: at }).where(eq(schema.jobs.id, jobId));
+  }
   try {
     switch (current) {
       case "queued":
@@ -382,13 +421,13 @@ export async function advanceJob(jobId: string) {
         break;
       }
       case "pdf": {
-        const figures = figuresEnabled() ? await pickFigures(await slideDecks(lecture), a.summary!) : [];
+        const figures = figuresEnabled() ? await withTimeout(slideDecks(lecture).then((d) => pickFigures(d, a.summary!)), Number(process.env.FIGURES_TIMEOUT_MS || 90_000), "figures")
+          .catch((e) => { console.warn("figures skipped:", (e as Error).message); return []; }) : [];
         a.figures = figures.map(({ src: _src, ...f }) => f); a.figuresNote = figuresEnabled() ? lastFigureNote : "FIGURES=off";
-        const siblings = await db.select({ id: schema.lectures.id }).from(schema.lectures).where(eq(schema.lectures.courseId, lecture.courseId)).orderBy(asc(schema.lectures.createdAt)).catch(() => []);
-        const n = siblings.findIndex((r) => r.id === lecture.id) + 1;
-        const html = renderStudyHtml(a.summary!, figures, { course: course?.name, lecture: n ? `הרצאה ${n}` : null, date: lecture.recordedAt ?? new Date(lecture.createdAt).toISOString().slice(0, 10), level: DENSITY_LABEL[jobDensity(a)] ?? DENSITY_LABEL.standard });
+        // Lecture number only when the source says so (title like "הרצאה 5" / "Lecture 5"); never guessed from list position.
+        const html = renderStudyHtml(a.summary!, figures, { course: course?.name, lecture: verifiedLectureLabel(lecture.title), date: lecture.recordedAt ?? new Date(lecture.createdAt).toISOString().slice(0, 10), level: DENSITY_LABEL[jobDensity(a)] ?? DENSITY_LABEL.standard });
         a.html = await saveArtifact(`${lecture.id}-${jobId}-study.html`, html, "text/html; charset=utf-8");
-        const pdf = await htmlToPdf(html, { footerTemplate: studyFooterTemplate(a.slidesOnly ? null : a.coverage?.ratio) }).catch((e) => { console.warn("pdf render failed, HTML only:", e); return null; });
+        const pdf = await withTimeout(htmlToPdf(html, { footerTemplate: studyFooterTemplate(a.slidesOnly ? null : a.coverage?.ratio) }), Number(process.env.PDF_TIMEOUT_MS || 120_000), "pdf render").catch((e) => { console.warn("pdf render failed, HTML only:", e); return null; });
         a.pdf = pdf ? await saveArtifact(`${lecture.id}-${jobId}-study.pdf`, pdf, "application/pdf") : a.html;
         if (process.env.DELETE_RAW_AUDIO !== "false") { await cleanupAudio(lecture.id); a.audioDeleted = true; }
         break;
@@ -397,7 +436,7 @@ export async function advanceJob(jobId: string) {
     // A final POST /process may clear options.live while this (long) ASR call runs; don't overwrite it with our stale copy.
     const fresh = await db.query.jobs.findFirst({ where: eq(schema.jobs.id, jobId) });
     if (fresh) { const fo = (JSON.parse(fresh.artifacts) as { options?: object }).options; if (fo) (a as { options?: object }).options = fo; }
-    delete a.overloadHolds;
+    delete a.overloadHolds; delete a.run;
     const ns = next ?? "done";
     if (ns !== "asr" || current !== "asr") a.progressDetail = { stage: ns, label: stageLabel(ns) + (a.asrIncomplete ? " · ASR incomplete — reprocess needed" : "") };
     // Multi-density request: once the first summary is done, spawn one sibling job per extra level (reuses ASR+repair).
@@ -411,7 +450,10 @@ export async function advanceJob(jobId: string) {
       .where(eq(schema.jobs.id, jobId)).returning();
     return row;
   } catch (e) {
-    if (e instanceof GeminiOverloadedError && (a.overloadHolds ?? 0) < Number(process.env.GEMINI_OVERLOAD_MAX_HOLDS || 8)) {
+    delete a.run;
+    // Busy Gemini is never a hard failure: hold & auto-retry (hold capped at 15 min). GEMINI_OVERLOAD_MAX_HOLDS>0 re-enables a cap.
+    const maxHolds = Number(process.env.GEMINI_OVERLOAD_MAX_HOLDS || 0);
+    if (e instanceof GeminiOverloadedError && (!maxHolds || (a.overloadHolds ?? 0) < maxHolds)) {
       // Soft hold instead of `failed`: keep the stage, back off, and let the next poll resume after holdUntil.
       // Prevents the client's fail→retry loop from hammering an overloaded model every 15-30 s.
       const holds = (a.overloadHolds ?? 0) + 1, wait = overloadHoldMs(holds - 1);
@@ -428,6 +470,12 @@ export async function advanceJob(jobId: string) {
       .where(eq(schema.jobs.id, jobId)).returning();
     return row;
   }
+}
+
+/** "הרצאה N" only if the lecture's own (source) title carries a lecture number; the title chip already shows it otherwise. */
+export function verifiedLectureLabel(title?: string | null): string | null {
+  const m = /(?:הרצאה|שיעור|lecture|lec\.?)\s*(?:מס'?|no\.?|#)?\s*(\d{1,2})(?!\d|\s*[\/.]\s*\d)/i.exec(title ?? "");
+  return m ? `הרצאה ${Number(m[1])}` : null;
 }
 
 /** Keep job errors short and readable (Google errors embed huge JSON). */

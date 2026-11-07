@@ -22,9 +22,18 @@ const unent = (s: unknown) => str(s).replace(/&(gt|lt|amp|quot|#39);/g, (_, e) =
  * Wrap Latin runs (and any stray `\command…` TeX run) in LTR isolates so English terms / leftover TeX
  * render correctly inside RTL Hebrew instead of being reordered into garbage like `frac\ - 1)left\`.
  */
-const bidiPlain = (s: string) =>
-  // HTML entities from esc() (&amp; …) are skipped so their letters are never wrapped (was rendering "&" as ";amp&").
-  esc(s).replace(/(&(?:[a-z]+|#\d+);)|(\\[A-Za-z]+[^\s\u0590-\u05FF]*(?:\s+[^\s\u0590-\u05FF]+)*|[A-Za-z][A-Za-z0-9\-_. ]*[A-Za-z0-9])/g, (m, ent) => ent ? m : `<bdi dir="ltr">${m}</bdi>`);
+/**
+ * Unicode arrows are not bidi-mirrored, so "A → B" in an RTL paragraph reads backwards (points at A).
+ * In RTL prose flip them so they point in the reading direction. Math (KaTeX, LTR-isolated) is untouched.
+ */
+let rtlArrows = true;
+const ARROW_FLIP: Record<string, string> = { "→": "←", "←": "→", "⇒": "⇐", "⇐": "⇒", "⟶": "⟵", "⟵": "⟶", "⟹": "⟸", "⟸": "⟹", "↦": "↤", "↤": "↦" };
+export const flipArrows = (s: string) => s.replace(/->|=>|[→←⇒⇐⟶⟵⟹⟸↦↤]/g, (c) => ({ "->": "←", "=>": "⇐" } as Record<string, string>)[c] ?? ARROW_FLIP[c]);
+const bidiPlain = (s0: string) => {
+  const s = rtlArrows ? flipArrows(s0) : s0;
+  return ( // HTML entities from esc() (&amp; …) are skipped so their letters are never wrapped (was rendering "&" as ";amp&").
+  esc(s).replace(/(&(?:[a-z]+|#\d+);)|(\\[A-Za-z]+[^\s\u0590-\u05FF]*(?:\s+[^\s\u0590-\u05FF]+)*|[A-Za-z][A-Za-z0-9\-_. ]*[A-Za-z0-9])/g, (m, ent) => ent ? m : `<bdi dir="ltr">${m}</bdi>`));
+};
 
 /**
  * Math: LaTeX in summary text is rendered server-side with KaTeX (pure JS → HTML+CSS, no browser JS needed),
@@ -34,8 +43,17 @@ const bidiPlain = (s: string) =>
  * Malformed TeX falls back to the raw source in red (throwOnError:false), so a bad formula never fails the job.
  */
 const MATH = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|\$(?!\s)([^$\n]+?)(?<!\s)\$(?!\d)/g;
+/**
+ * TeX only raises ONE token after ^/_ — model text like `2^10`, `a^(n+1)`, `x^-1` printed as 2¹0, a⁽n+1), x⁻1
+ * (power "starts then drops"). Brace multi-char exponents/subscripts the way the author meant them.
+ */
+export function normalizeScripts(tex: string): string {
+  return tex
+    .replace(/([\^_])\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g, (_, op, body) => `${op}{${body}}`)
+    .replace(/([\^_])\s*(-?\d+(?:\.\d+)?|-[A-Za-z][A-Za-z0-9]*)(?![\d.])/g, (m, op, body) => (body.length > 1 ? `${op}{${body}}` : m));
+}
 export function renderMath(tex: string, display: boolean): string {
-  const html = katex.renderToString(tex.trim(), { displayMode: display, throwOnError: false, output: "html", strict: "ignore" });
+  const html = katex.renderToString(normalizeScripts(tex.trim()), { displayMode: display, throwOnError: false, output: "html", strict: "ignore" });
   return display ? `<div class="math" dir="ltr">${html}</div>` : `<bdi class="math" dir="ltr">${html}</bdi>`;
 }
 
@@ -53,7 +71,7 @@ const balanced = (t: string) => {
   return d === 0;
 };
 function renderBare(tex: string): string | null {
-  const t = tex.replace(/≤/g, "\\le ").replace(/≥/g, "\\ge ");
+  const t = normalizeScripts(tex).replace(/≤/g, "\\le ").replace(/≥/g, "\\ge ");
   if (!balanced(t)) return null;
   try {
     katex.renderToString(t, { throwOnError: true, strict: "ignore" });
@@ -130,6 +148,17 @@ function bidiMath(s: string): string {
   return out + plainWithBareMath(s.slice(last));
 }
 
+/** ONE glossary: the general glossary plus the big-picture "missed terms", deduped by term (case/space-insensitive). */
+export function mergedGlossary(s: LectureSummary): { term: unknown; explanation: unknown }[] {
+  const out: { term: unknown; explanation: unknown }[] = [], seen = new Set<string>();
+  for (const g of [...arr<any>(s.glossary), ...arr<any>(s.big_picture?.missed_terms)]) {
+    const k = str(g?.term).toLowerCase().replace(/[\s\-_"'״׳().]+/g, "");
+    if (!k || seen.has(k)) continue;
+    seen.add(k); out.push({ term: g.term, explanation: g.explanation ?? "" });
+  }
+  return out;
+}
+
 /** "Big picture" appendix after the glossary (optional). RTL like the body when it contains Hebrew; LTR only if fully non-Hebrew. Math/cites/Latin stay LTR-isolated via bidi(). */
 export function renderBigPicture(b: LectureSummary["big_picture"]): string {
   if (!b || (!str(b.intent).trim() && !b.themes?.length && !b.missed_terms?.length)) return "";
@@ -140,11 +169,14 @@ export function renderBigPicture(b: LectureSummary["big_picture"]): string {
   const [dir, lang, h2, h3] = he
     ? ["rtl", "he", "התמונה הגדולה — מה ההרצאה ניסתה ללמד", "מונחים שהופיעו בהרצאה"]
     : ["ltr", "en", "Big picture — what this lecture was trying to teach", "Terms used in the lecture"];
+  rtlArrows = he;
+  try {
   return `<section class="big-picture" dir="${dir}" lang="${lang}"><h2>${h2}</h2>
 ${str(b.intent).trim() ? `<p>${bidi(b.intent)}</p>` : ""}
 ${themes.map((t) => `<h3>${bidi(t.title ?? "")}</h3><p>${bidi(t.explanation ?? "")}</p>`).join("\n")}
 ${terms.length ? `<h3>${h3}</h3><dl>${terms.map((g) => `<dt>${bidi(g.term)}</dt><dd>${bidi(g.explanation ?? "")}</dd>`).join("")}</dl>` : ""}
 </section>`;
+  } finally { rtlArrows = true; }
 }
 
 /**
@@ -206,8 +238,8 @@ ${BRAND_CSS}
 <main>${s.transcript_thin ? `<p class="thin">שימו לב: התמלול של ההקלטה קצר/חסר ביחס לשקפים — חלק מהסיכום מבוסס על השקפים בלבד.</p>` : ""}${arr(s.overview).map((o) => `<p class="ov">${bidi(o)}</p>`).join("")}
 ${keys.length ? `<div class="key"><div class="kh">חשוב לזכור</div><ul>${keys.map((b) => `<li>${bidi(b)}</li>`).join("")}</ul></div>` : ""}
 ${secs.map((x, i) => `<section class="card"><div class="sh"><span class="num">${String(i + 1).padStart(2, "0")}</span><h2>${bidi(x?.heading)}</h2>${x?.citation ? renderCite(unent(x.citation)) : ""}</div>${x?.style === "prose" ? arr(x.bullets).map((b) => `<p>${bidi(b)}</p>`).join("") : `<ul>${arr(x?.bullets).map((b) => `<li>${bidi(b)}</li>`).join("")}</ul>`}${figs(i)}</section>`).join("\n")}
-<div class="gt">מילון מונחים</div><dl class="gl">${arr<any>(s.glossary).map((g) => `<div class="term"><dt>${bidi(g?.term)}</dt><dd>${bidi(g?.explanation)}</dd></div>`).join("")}</dl>
-${renderBigPicture(s.big_picture)}
+<div class="gt">מילון מונחים</div><dl class="gl">${mergedGlossary(s).map((g) => `<div class="term"><dt>${bidi(g?.term)}</dt><dd>${bidi(g?.explanation)}</dd></div>`).join("")}</dl>
+${renderBigPicture(s.big_picture ? { ...s.big_picture, missed_terms: [] } : s.big_picture)}
 <div class="sign">${SIGN_OFF}</div></main>
 </body></html>`;
 }

@@ -173,6 +173,7 @@ Slides / materials:
 ${slides.slice(0, 60000) || "(none)"}
 Course-pack excerpts: ${ctx.courseExcerpts?.(slides.slice(0, 4000), 6000) || "(none)"}
 Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}],"big_picture":{"intent","themes":[{"title","explanation"}],"missed_terms":[{"term","explanation"}]}}.
+"title" = the lecture topic only; never add a lecture number ("הרצאה 1", "Lecture 3") unless that exact number is in the lecture title given above.
 ${BIG_PICTURE}
 MATH (rendered with KaTeX — undelimited TeX prints as garbage in the RTL PDF):
 - EVERY formula, equation, symbol or expression MUST be wrapped: inline \\( ... \\), display $$ ... $$. This includes single symbols (\\(\\varepsilon\\), \\(\\delta\\), \\(|H|\\)).
@@ -279,6 +280,7 @@ SUPPORTING CONTEXT — slides (glossary/structure/diagrams only; not the outline
 ${slidesForSummary(ctx.slidesText)}
 Course-pack excerpts: ${ctx.courseExcerpts?.(text, 6000) || "(none)"}
 Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}],"big_picture":{"intent","themes":[{"title","explanation"}],"missed_terms":[{"term","explanation"}]}}.
+"title" = the lecture topic only; never add a lecture number ("הרצאה 1", "Lecture 3") unless that exact number is in the lecture title given above.
 ${BIG_PICTURE}
 Put cites inline at the end of bullets and in each section's "citation".
 MATH (rendered with KaTeX — undelimited TeX prints as garbage in the RTL PDF):

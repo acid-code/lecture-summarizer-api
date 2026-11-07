@@ -51,9 +51,10 @@ async function uploadToGemini(ai: GoogleGenAI, url: string, fallbackMime: string
  * Walk the Lite-first ladder, skipping models persisted as RPD-exhausted (until next UTC midnight).
  * - Daily quota (RPD) 429 → persist cooldown, move to next model, never retry it again today.
  * - Per-minute (RPM) 429 → short backoff (Google retryDelay, capped) and retry the same model once, then next model.
- * - 503 / UNAVAILABLE / high demand → exponential backoff + jitter on the same model (GEMINI_OVERLOAD_RETRIES, default 3),
- *   then fall back to GEMINI_FALLBACK_MODEL (default gemini-3.1-flash-lite), then other ladder rungs. Keys are NOT rotated
- *   for overload; if everything stays overloaded a GeminiOverloadedError is thrown (pipeline holds the job, doesn't fail it).
+ * - 503 / UNAVAILABLE / high demand → switch immediately to GEMINI_FALLBACK_MODEL (default gemini-3.1-flash-lite), then other
+ *   ladder rungs; when all are busy, return to the primary with exp backoff + jitter and alternate again (GEMINI_OVERLOAD_RETRIES
+ *   rounds, default 3, within the budget). Keys are NOT rotated for overload; if everything stays busy a GeminiOverloadedError
+ *   is thrown and the pipeline soft-holds the job (auto-retry, never failed).
  * - 500 INTERNAL → bounded jittered backoff (GEMINI_RETRIES). All waits share GEMINI_RETRY_BUDGET_MS.
  * - Invalid/revoked key → next key. Quota: when a key's ladder is exhausted the next key is tried; a key whose
  *   ladder hit RPD is skipped until 00:00 UTC. If every key is exhausted/rate-limited, throw a short QuotaError.
@@ -99,21 +100,26 @@ async function withRetryKey<T>(key: string, kidx: number, f: (model: string, ai:
       const kind = classifyGeminiError(msg);
       const tag = `gemini model=${model} key#${kidx}(${kid})`;
       if (kind === "overloaded") {
-        overloaded++;
-        const wait = backoffMs(overloaded, Number(process.env.GEMINI_OVERLOAD_BASE_MS || 2000), 20_000);
-        if (overloaded < overloadTries && Date.now() - start + wait <= budget) {
-          console.warn(`${tag}: 503 overloaded (attempt ${overloaded}/${overloadTries}), backing off ${Math.round(wait / 1000)}s`);
-          await sleep(wait);
+        // Busy model: switch to the alternate model right away (no waiting on a busy model). When the alternate is busy
+        // too, go back to the primary and back off (exp + jitter), then alternate again — until the budget is spent,
+        // after which the pipeline soft-holds the job (never a hard failure).
+        triedOverloaded.add(model);
+        const primary = ladder[idx];
+        const fb = overloadFallback(model, ladder, triedOverloaded);
+        if (fb && Date.now() - start <= budget) {
+          console.warn(`${tag}: 503 busy — switching to alternate model=${fb}`);
+          override = fb === primary ? null : fb;
           continue;
         }
-        triedOverloaded.add(model);
-        const fb = overloadFallback(model, ladder, triedOverloaded);
-        if (!fb || Date.now() - start > budget) {
-          console.warn(`${tag}: still overloaded, no fallback left / budget spent — giving up (tried ${[...triedOverloaded].join(",")})`);
+        overloaded++;
+        const wait = backoffMs(overloaded, Number(process.env.GEMINI_OVERLOAD_BASE_MS || 2000), 20_000);
+        if (overloaded > overloadTries || Date.now() - start + wait > budget) {
+          console.warn(`${tag}: all models busy after ${overloaded - 1} rounds — holding job (tried ${[...triedOverloaded].join(",")})`);
           throw new GeminiOverloadedError([...triedOverloaded]);
         }
-        console.warn(`${tag}: still overloaded after ${overloaded} attempts — falling back to model=${fb}`);
-        override = fb; overloaded = 0;
+        console.warn(`${tag}: all models busy — back to model=${primary}, backing off ${Math.round(wait / 1000)}s (round ${overloaded}/${overloadTries})`);
+        await sleep(wait);
+        override = null; triedOverloaded.clear();
         continue;
       }
       if (kind === "daily_quota" || kind === "rpm") {
