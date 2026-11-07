@@ -149,6 +149,20 @@ export async function getFile(lid: string, fid: string) {
     "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(name)}` } });
 }
 
+/** DELETE /v1/lectures/{id}/slides — detach all decks, keeping audio/transcript/jobs.
+ * Ownership is checked by the router before this handler. Detached blobs are retained
+ * rather than eagerly deleted while a job may read them; retention cleanup is separate.
+ */
+export async function clearLectureSlides(lid: string) {
+  const [lecture] = await db.select().from(schema.lectures).where(eq(schema.lectures.id, lid));
+  if (!lecture) return notFound();
+  await db.batch([
+    db.delete(schema.lectureFiles).where(and(eq(schema.lectureFiles.lectureId, lid), eq(schema.lectureFiles.kind, "slides"))),
+    db.update(schema.lectures).set({ slidesUrl: null, slidesText: null }).where(eq(schema.lectures.id, lid)),
+  ]);
+  return j({ ok: true, files: 0 });
+}
+
 /**
  * POST /v1/lectures/{id}/slides — ADDS a deck (PDF/PPTX). Several decks per lecture are supported; re-uploading the
  * same file name replaces that deck (idempotent retries). ?replace=all clears previous decks first (old one-slot behaviour).
