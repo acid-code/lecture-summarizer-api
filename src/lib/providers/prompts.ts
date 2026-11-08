@@ -92,7 +92,7 @@ the same span with only the fix applied. If unsure, skip it or give low confiden
 const ctxBlock = (t: Transcript, ctx: LectureContext, slides = 8000, pack = 5000) => {
   const text = t.segments.map((s) => s.text).join(" ");
   return `Primary evidence — lecture slides (glossary of correct spellings):
-${(ctx.slidesText ?? "(none)").slice(0, slides)}
+${slidesForSummary(ctx.slidesText,Math.floor(slides*0.7),Math.floor(slides*0.3))}
 Secondary evidence — course pack excerpts:
 ${ctx.courseExcerpts?.(text, pack) || "(none)"}`;
 };
@@ -170,7 +170,7 @@ per slide/page, slides separated by form-feeds or "=== file ===" headers). Slide
 - Be thorough: cover every slide topic (one section per topic group, 4-10 bullets each, 1-3 dense sentences per bullet), keep
   all specific numbers/examples/definitions from the slides, mark slides' emphasised/boxed/"important" items with a leading "חשוב: ".
 Slides / materials:
-${slides.slice(0, 60000) || "(none)"}
+${slidesForSummary(slides,40000,20000)}
 Course-pack excerpts: ${ctx.courseExcerpts?.(slides.slice(0, 4000), 6000) || "(none)"}
 Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}],"big_picture":{"intent","themes":[{"title","explanation"}],"missed_terms":[{"term","explanation"}]}}.
 "title" = the lecture topic only; never add a lecture number ("הרצאה 1", "Lecture 3") unless that exact number is in the lecture title given above.
@@ -186,8 +186,11 @@ MATH (rendered with KaTeX — undelimited TeX prints as garbage in the RTL PDF):
 /** Slide text for the summary prompt: head of the deck plus the closing slides in full (end-of-deck summaries matter). */
 export function slidesForSummary(slides?: string | null, head = 10000, tail = 5000): string {
   if (!slides) return "(none)";
-  if (slides.length <= head + tail) return slides + `\n(FINAL SLIDES = the last slides above.)`;
-  return slides.slice(0, head) + `\n…(middle slides omitted)…\nFINAL SLIDES (end of deck, closing summary):\n` + slides.slice(-tail);
+  const parts=slides.split(/(?==== [^\n]+ ===\n)/m).filter(x=>x.trim());
+  // Budget EACH source: first/last globally could otherwise discard an entire middle deck.
+  const perHead=Math.max(200,Math.floor(head/parts.length)),perTail=Math.max(100,Math.floor(tail/parts.length));
+  return parts.map(part=>part.length<=perHead+perTail?part+"\n(FINAL SLIDES = the last slides above.)":
+    part.slice(0,perHead)+"\n…(middle slides omitted)…\nFINAL SLIDES (end of this deck):\n"+part.slice(-perTail)).join("\n");
 }
 
 /** Target density scaled by spoken length and the chosen density level (standard = tight study notes). */
@@ -277,6 +280,7 @@ PRIMARY SOURCE — transcript (lecture time M:SS):
 ${fmtTimed(t) || "(empty)"}
 Term repairs already applied: ${JSON.stringify(repairs)}
 SUPPORTING CONTEXT — slides (glossary/structure/diagrams only; not the outline of the summary):
+Each === filename === block is a separate attached deck. Use ALL relevant decks. Retain original slide numbers; when citing slides from multiple decks include the filename. Approximate focus ranges are uncertain; do not invent coverage or ignore the transcript.
 ${slidesForSummary(ctx.slidesText)}
 Course-pack excerpts: ${ctx.courseExcerpts?.(text, 6000) || "(none)"}
 Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}],"big_picture":{"intent","themes":[{"title","explanation"}],"missed_terms":[{"term","explanation"}]}}.

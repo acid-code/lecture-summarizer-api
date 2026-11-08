@@ -5,7 +5,7 @@
  * Pure w.r.t. the model: callers pass `J` (prompt → parsed JSON, with their own retry / quota handling).
  */
 import type { LectureContext, LectureSummary, Transcript } from "./types";
-import { NO_NIQQUD } from "./prompts";
+import { NO_NIQQUD, slidesForSummary } from "./prompts";
 
 export type JsonFn = <T = any>(prompt: string, opts?: { strong?: boolean }) => Promise<T>;
 export const HIER_PART_SEC = 600;
@@ -41,7 +41,7 @@ const CONC = () => Math.max(1, Number(process.env.SUMMARY_HIER_CONCURRENCY || 3)
 /** Run as much of the hierarchical summary as fits before `deadline` (ms epoch). Returns the summary when finished, else null (state updated). */
 export async function hierarchicalStep(tr: Transcript, ctx: LectureContext, J: JsonFn, st: HierState, deadline = Infinity, log: (m: string) => void = console.warn): Promise<LectureSummary | null> {
   const segs = tr.segments; const end = Math.max(...segs.map((x) => x.end));
-  const title = ctx.title; const slides = (ctx.slidesText ?? "").slice(0, 3000);
+  const title = ctx.title; const slides = slidesForSummary(ctx.slidesText,2200,800);
   const timeLeft = () => deadline - Date.now() > 100_000;
   const Jc: JsonFn = (p, o) => { st.calls = (st.calls ?? 0) + 1; return J(p, o); };
   // 1) per-part notes

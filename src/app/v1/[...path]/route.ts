@@ -45,6 +45,7 @@ async function route(req: Request, { params }: Ctx) {
     if (a === "lectures" && b) {
       if (!c && m === "GET") return h.getLecture(b);
       if (!c && m === "DELETE") return h.deleteLecture(b);
+      if (c === "slides" && !d && m === "GET") return h.slideCapabilities(b);
       if (c === "slides" && !d && m === "DELETE") return h.clearLectureSlides(b);
       if (c === "slides" && m === "POST") return h.uploadSlides(req, b);
       if (c === "context" && m === "POST") {

@@ -1,3 +1,4 @@
+import { pageInRange, type SlideRange } from "../slide-ranges";
 /**
  * Figure embedding for the study PDF: render slide pages to JPEG thumbnails, let a cheap vision model
  * (Mistral, `ministral-14b-2512` by default) pick up to FIGURES_MAX important figures {page, caption, section},
@@ -33,7 +34,7 @@ export interface Figure {
   /** data:image/jpeg;base64,... */
   src: string;
 }
-export interface SlideDeck { name: string; mime: string; data: Uint8Array }
+export interface SlideDeck { name: string; mime: string; data: Uint8Array; range?:SlideRange|null }
 interface PageInfo { deck: string; page: number; text: string; imageOps: number; score: number; jpeg?: Buffer; sha?: string; dhash?: bigint | null }
 interface Pick { c: PageInfo; section: number; caption: string; relevance: number }
 
@@ -278,11 +279,11 @@ export async function pickFigures(decks: SlideDeck[], s: LectureSummary): Promis
         : d.mime.includes("pdf") || d.name.toLowerCase().endsWith(".pdf") ? d.data : null;
       if (!pdfData) {
         // No LibreOffice (Vercel): use the largest embedded picture of each slide straight from the PPTX zip.
-        if (isPptx(d.mime, d.name) || d.name.toLowerCase().endsWith(".pptx")) all.push(...await pptxMediaPages(d.name, d.data));
+        if (isPptx(d.mime, d.name) || d.name.toLowerCase().endsWith(".pptx")) all.push(...(await pptxMediaPages(d.name, d.data)).filter(p=>pageInRange(p.page,d.range)));
         continue;
       }
       const { pdf, pages } = await analyze(d.name, pdfData);
-      docs.set(d.name, pdf); pdfBytes.set(d.name, pdfData); all.push(...pages);
+      docs.set(d.name, pdf); pdfBytes.set(d.name, pdfData); all.push(...pages.filter(p=>pageInRange(p.page,d.range)));
     }
     const max = MAX();
     // Pre-filter for cost: pages with images or vector drawings. Slides cited by a section go first (most likely relevant), then best-scoring; capped.

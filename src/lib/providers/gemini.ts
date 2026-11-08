@@ -1,3 +1,4 @@
+import { slidesForSummary } from "./prompts";
 import { GoogleGenAI, createPartFromUri, type Part } from "@google/genai";
 import { readFileUrl } from "../storage";
 import { clipper } from "./clip";
@@ -233,7 +234,7 @@ export const geminiProvider: AiProvider = {
   name: "gemini",
   async transcribe(audio, ctx): Promise<WindowTranscript> {
     const ai = client();
-    const hints = (ctx.slidesText ?? "(none)").slice(0, 6000);
+    const hints = slidesForSummary(ctx.slidesText,4000,2000);
     const LANG = `Transcribe this university lecture audio ("${ctx.title}"). The speaker mixes Hebrew and English, often inside ` +
       `the same sentence (Hebrew with English technical terms/phrases, sometimes whole English sentences): write Hebrew words in ` +
       `Hebrew script and English words in Latin script exactly as spoken; never translate or transliterate either way. ` +

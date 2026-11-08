@@ -44,6 +44,7 @@ export const segments = sqliteTable("segments", {
  * as "first deck" for old readers; lectures.slides_text is the concatenation of all decks' text.
  */
 export const lectureFiles = sqliteTable("lecture_files", {
+  slideRange: text("slide_range"),
   id: text("id").primaryKey(),
   lectureId: text("lecture_id").notNull().references(() => lectures.id),
   kind: text("kind").notNull().default("slides"),

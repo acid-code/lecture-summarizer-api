@@ -1,3 +1,4 @@
+import { storedSlideRange } from "../slide-ranges";
 import { asrSpan, type HierState } from "../providers/hierarchical";
 import { asrCompleteness, computeCoverage, mergeTranscripts, fixBackwardRanges, fmtWin, mergeGapSections, sliceTranscript, type Coverage } from "./coverage";
 import { and, asc, desc, eq, ne } from "drizzle-orm";
@@ -91,12 +92,12 @@ async function cleanupAudio(lectureId: string) {
 /** PDF/PPTX decks attached to the lecture (for figure embedding). Unreadable files are skipped. */
 async function slideDecks(lecture: { id: string; slidesUrl: string | null }): Promise<SlideDeck[]> {
   const rows = await db.select().from(schema.lectureFiles).where(eq(schema.lectureFiles.lectureId, lecture.id)).orderBy(asc(schema.lectureFiles.createdAt));
-  const files = rows.length ? rows.map((r) => ({ name: r.name, mime: r.mime, url: r.url }))
-    : lecture.slidesUrl ? [{ name: decodeURIComponent(lecture.slidesUrl.split("/").pop()!.split("?")[0]), mime: "", url: lecture.slidesUrl }] : [];
+  const files = rows.length ? rows.map((r) => ({ name: r.name, mime: r.mime, url: r.url, range:storedSlideRange(r.slideRange) }))
+    : lecture.slidesUrl ? [{ name: decodeURIComponent(lecture.slidesUrl.split("/").pop()!.split("?")[0]), mime: "", url: lecture.slidesUrl,range:null }] : [];
   const out: SlideDeck[] = [];
   for (const f of files) {
     if (!/pdf|presentationml/.test(f.mime) && !/\.(pdf|pptx)$/i.test(f.name)) continue;
-    try { const r = await readFileUrl(f.url); out.push({ name: f.name, mime: f.mime || r.mime || "", data: new Uint8Array(r.data) }); }
+    try { const r = await readFileUrl(f.url); out.push({ name: f.name, mime: f.mime || r.mime || "", data: new Uint8Array(r.data),range:f.range }); }
     catch (e) { console.warn("deck unreadable, skipped for figures:", f.name, (e as Error).message); }
   }
   return out;
