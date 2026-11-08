@@ -1,3 +1,4 @@
+import { memoryPairsHeader } from "../study/memory";
 import { parseSlideRange, storedSlideRange, focusedDeckText, combineDeckText } from "../slide-ranges";
 import { parseDensity, DENSITIES, type Density } from "../providers/types";
 /**
@@ -468,7 +469,8 @@ export async function listSummaries(lid: string) {
   for (const d of DENSITIES) {
     const done = jobs.find((x) => x.stage === "done" && jobDensity(JSON.parse(x.artifacts)) === d);
     const running = jobs.find((x) => x.stage !== "done" && x.stage !== "failed" && jobDensity(JSON.parse(x.artifacts)) === d && (!done || x.updatedAt > done.updatedAt));
-    out[d] = { done_job_id: done?.id ?? null, updated_at: done ? new Date(done.updatedAt).toISOString() : null, running_job_id: running?.id ?? null };
+    const failed=jobs.find(x=>x.stage==="failed"&&jobDensity(JSON.parse(x.artifacts))===d&&(!done||x.updatedAt>done.updatedAt));
+    out[d] = { done_job_id: done?.id ?? null, updated_at: done ? new Date(done.updatedAt).toISOString() : null, running_job_id: running?.id ?? null, running_stage:running?.stage??null, failed_job_id:running?null:failed?.id??null };
   }
   return j({ lecture_id: lid, densities: out });
 }
@@ -482,7 +484,7 @@ export async function summaryFile(lid: string, kind: "pdf" | "html" | "json", de
   const isPdf = kind === "pdf" && !url.endsWith(".html");
   if (kind === "pdf" && !isPdf) return j({ error: "PDF renderer unavailable on this deployment; use summary.html" }, 501);
   const { data } = await readFileUrl(url);
-  return new Response(new Uint8Array(data), { headers: { "content-type": isPdf ? "application/pdf" : "text/html; charset=utf-8" } });
+  return new Response(new Uint8Array(data), { headers: { "content-type": isPdf ? "application/pdf" : "text/html; charset=utf-8", ...(isPdf?{"X-Study-Pairs":memoryPairsHeader(a.summary)}:{}) } });
 }
 
 /**
@@ -570,4 +572,14 @@ export async function createUpload(req: Request) {
 export async function lectureCourseId(lectureId: string): Promise<string | null> {
   const l = await db.query.lectures.findFirst({ where: eq(schema.lectures.id, lectureId) });
   return l?.courseId ?? null;
+}
+
+/** Move the relationship only. Jobs, lecture files, transcript and all density PDFs keep the same lecture id. */
+export async function moveLecture(req:Request,lid:string,dev:string|null){
+  if(!dev)return j({error:"device_required"},401);
+  const parsed=z.object({course_id:z.string().min(1)}).strict().safeParse(await req.json().catch(()=>null));
+  if(!parsed.success)return j({error:"invalid_request"},400);
+  if(!await ownsLecture(dev,lid)||!await ownsCourse(dev,parsed.data.course_id))return notFound();
+  await db.update(schema.lectures).set({courseId:parsed.data.course_id}).where(eq(schema.lectures.id,lid));
+  return j({lecture_id:lid,course_id:parsed.data.course_id,moved:true});
 }

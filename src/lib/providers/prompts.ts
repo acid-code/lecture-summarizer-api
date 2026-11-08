@@ -172,7 +172,8 @@ per slide/page, slides separated by form-feeds or "=== file ===" headers). Slide
 Slides / materials:
 ${slidesForSummary(slides,40000,20000)}
 Course-pack excerpts: ${ctx.courseExcerpts?.(slides.slice(0, 4000), 6000) || "(none)"}
-Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}],"big_picture":{"intent","themes":[{"title","explanation"}],"missed_terms":[{"term","explanation"}]}}.
+Also return memory_pairs: 8-16 unique matching-game pairs when the material supports them (fewer rather than invented facts). Each term is concise (up to 40 characters), and each definition is a short, Hebrew-friendly single clause (up to 100 characters), grounded ONLY in this lecture. Do not add model calls for these pairs.
+Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}],"memory_pairs":[{"term","definition"}],"big_picture":{"intent","themes":[{"title","explanation"}],"missed_terms":[{"term","explanation"}]}}.
 "title" = the lecture topic only; never add a lecture number ("הרצאה 1", "Lecture 3") unless that exact number is in the lecture title given above.
 ${BIG_PICTURE}
 MATH (rendered with KaTeX — undelimited TeX prints as garbage in the RTL PDF):
@@ -283,7 +284,8 @@ SUPPORTING CONTEXT — slides (glossary/structure/diagrams only; not the outline
 Each === filename === block is a separate attached deck. Use ALL relevant decks. Retain original slide numbers; when citing slides from multiple decks include the filename. Approximate focus ranges are uncertain; do not invent coverage or ignore the transcript.
 ${slidesForSummary(ctx.slidesText)}
 Course-pack excerpts: ${ctx.courseExcerpts?.(text, 6000) || "(none)"}
-Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}],"big_picture":{"intent","themes":[{"title","explanation"}],"missed_terms":[{"term","explanation"}]}}.
+Also return memory_pairs: 8-16 unique matching-game pairs when the material supports them (fewer rather than invented facts). Each term is concise (up to 40 characters), and each definition is a short, Hebrew-friendly single clause (up to 100 characters), grounded ONLY in this lecture. Do not add model calls for these pairs.
+Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}],"memory_pairs":[{"term","definition"}],"big_picture":{"intent","themes":[{"title","explanation"}],"missed_terms":[{"term","explanation"}]}}.
 "title" = the lecture topic only; never add a lecture number ("הרצאה 1", "Lecture 3") unless that exact number is in the lecture title given above.
 ${BIG_PICTURE}
 Put cites inline at the end of bullets and in each section's "citation".

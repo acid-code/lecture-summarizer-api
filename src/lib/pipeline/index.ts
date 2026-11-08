@@ -1,3 +1,4 @@
+import { memoryPairs } from "../study/memory";
 import { storedSlideRange } from "../slide-ranges";
 import { asrSpan, type HierState } from "../providers/hierarchical";
 import { asrCompleteness, computeCoverage, mergeTranscripts, fixBackwardRanges, fmtWin, mergeGapSections, sliceTranscript, type Coverage } from "./coverage";
@@ -417,6 +418,7 @@ export async function advanceJob(jobId: string) {
           a.summary = fixBackwardRanges(a.summary);
           a.coverage = computeCoverage(tr, a.summary);
         } else a.summary = fixBackwardRanges(a.summary);
+        a.summary.memory_pairs=memoryPairs(a.summary);
         // Server-side truth wins over the model's flag.
         a.summary.transcript_thin = a.slidesOnly ? false : isTranscriptThin(tr, ctx.slidesText) || !!a.summary.transcript_thin;
         break;

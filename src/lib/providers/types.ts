@@ -9,6 +9,8 @@ export interface LectureSummary {
   /** style "prose": bullets are full paragraphs (rendered as <p>, not <li>). */
   sections: { heading: string; bullets: string[]; citation?: string; style?: "prose" }[];
   glossary: { term: string; explanation: string }[];
+  /** Short, grounded matching cards generated inside the existing summary job. */
+  memory_pairs?: {term:string;definition:string}[];
   /** True when the transcript was empty/very short vs slides (summary leans on slides). */
   transcript_thin?: boolean;
   /** Optional end-of-PDF "big picture" in English: main themes + what the lecture was trying to teach. Supplements, never replaces. */
