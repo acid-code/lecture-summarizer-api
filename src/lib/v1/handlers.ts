@@ -15,7 +15,7 @@ import { bad, id, notFound } from "../http";
 import { dedupeTranscript } from "../providers/dedupe";
 import { getProvider } from "../providers";
 import { deleteFileUrl } from "../storage";
-import { materialsText, advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, resumeStage, jobDensity, retryJob, type Artifacts } from "../pipeline";
+import { materialsText, advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, resumeStage, jobDensity, retryJob, cancelJob, RUN_LEASE_MS, STUCK_MS, type Artifacts } from "../pipeline";
 import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
 import { blobAccess, isAcceptableUploadUrl, readFileUrl, saveFile } from "../storage";
 import { captionsUsable, normalizeSegments, parseSrt, type ImportSegment } from "../transcript-import";
@@ -376,11 +376,17 @@ export async function importTranscript(req: Request, lid: string) {
 function jobView(job: typeof schema.jobs.$inferSelect) {
   const a = JSON.parse(job.artifacts) as Artifacts;
   const state = job.stage === "done" ? "done" : job.stage === "failed" ? "failed" : job.stage === "queued" ? "queued" : "running";
+  const now = Date.now();
+  const leaseBusy = !!(a.run && a.run.stage === job.stage && job.updatedAt <= a.run.at && now - a.run.at < RUN_LEASE_MS);
+  const stuck = state === "running" && now - job.updatedAt > STUCK_MS;
+  const holdMs = a.holdUntil && a.holdUntil > now ? a.holdUntil - now : 0;
   return { job_id: job.id, lecture_id: job.lectureId, density: jobDensity(a), state, stage: job.stage, progress: progressOf(job.stage), error: job.error,
     pdf_ready: !!a.pdf, asr_source: a.asrSource ?? "audio", slides_only: !!a.slidesOnly, transcript_ready: !!(a.repaired ?? a.asr)?.segments?.length, transcript_thin: a.summary?.transcript_thin ?? null,
     asr_incomplete: !!a.asrIncomplete, asr_check: a.asrCheck ?? null, coverage: a.coverage ?? null,
     warning: a.asrIncomplete ? `ASR incomplete — reprocess needed (transcript ends ${Math.round((a.asrCheck?.asrEndSec ?? 0) / 60)} of ${Math.round((a.asrCheck?.uploadedSec ?? 0) / 60)} min uploaded)` : a.coverage && !a.coverage.ok ? `Summary covers ${Math.round(a.coverage.ratio * 100)}% of the lecture` : null,
     updated_at: new Date(job.updatedAt).toISOString(), repairs: a.repair ?? null,
+    busy: leaseBusy, stuck, cancellable: state === "running" || state === "queued",
+    retry_after_sec: holdMs ? Math.ceil(holdMs / 1000) : leaseBusy ? Math.max(1, Math.ceil((RUN_LEASE_MS - (now - (a.run?.at ?? job.updatedAt))) / 1000)) : null,
     progress_detail: job.stage === "failed" || job.stage === "done" || a.progressDetail?.stage !== job.stage
       ? { stage: job.stage, label: job.stage === "asr" ? `ASR part ${(a.asrParts ?? 0) + 1}` : stageLabel(job.stage) }
       : a.progressDetail };
@@ -408,6 +414,13 @@ export async function postRetry(req: Request, jid: string) {
   if (!r.ok && r.reason === "not_found") return notFound();
   if (!r.ok) return j({ ...jobView(r.job!), error: `job is ${r.job!.stage}; only failed or stuck jobs can be retried (use ?force=1 for a running job)` }, 409);
   return j(jobView(r.job), 202);
+}
+
+/** POST /v1/jobs/{id}/cancel — stop a running job (failed + cancelled_by_user); keeps finished stage artifacts. */
+export async function postCancel(jid: string) {
+  const r = await cancelJob(jid);
+  if (!r.ok && r.reason === "not_found") return notFound();
+  return j(jobView(r.job!), 202);
 }
 
 /** GET /v1/jobs — 20 most recent jobs, for debugging without the phone's job id. */

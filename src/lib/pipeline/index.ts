@@ -260,8 +260,26 @@ export async function retryJob(jobId: string, force = false): Promise<RetryResul
   const stuck = job.stage !== "done" && job.stage !== "failed" && Date.now() - job.updatedAt > STUCK_MS;
   if (job.stage === "done" || (job.stage !== "failed" && !stuck && !force)) return { ok: false, reason: "not_retryable", job };
   const a = JSON.parse(job.artifacts) as Artifacts;
+  // Drop dead leases / overload holds so the next poll actually runs work (Vercel 300s kills leave `run` behind).
+  delete a.run; delete a.holdUntil; delete a.overloadHolds;
+  a.progressDetail = { stage: resumeStage(a), label: stageLabel(resumeStage(a)) };
   const stage = resumeStage(a);
-  const [row] = await db.update(schema.jobs).set({ stage, error: null, updatedAt: Date.now() })
+  const [row] = await db.update(schema.jobs).set({ stage, error: null, artifacts: JSON.stringify(a), updatedAt: Date.now() })
+    .where(eq(schema.jobs.id, jobId)).returning();
+  return { ok: true, job: row };
+}
+
+/** User stop: mark failed, clear leases/holds, keep finished stage artifacts. Idempotent for done/failed. */
+export async function cancelJob(jobId: string): Promise<RetryResult> {
+  await ensureDb();
+  const job = await db.query.jobs.findFirst({ where: eq(schema.jobs.id, jobId) });
+  if (!job) return { ok: false, reason: "not_found" };
+  if (job.stage === "done" || job.stage === "failed") return { ok: true, job };
+  const a = JSON.parse(job.artifacts) as Artifacts;
+  delete a.run; delete a.holdUntil; delete a.overloadHolds;
+  a.progressDetail = { stage: "failed", label: stageLabel("failed") };
+  const [row] = await db.update(schema.jobs)
+    .set({ stage: "failed", error: "cancelled_by_user", artifacts: JSON.stringify(a), updatedAt: Date.now() })
     .where(eq(schema.jobs.id, jobId)).returning();
   return { ok: true, job: row };
 }
@@ -295,7 +313,13 @@ export async function advanceJob(jobId: string) {
   let next = STAGES[STAGES.indexOf(current) + 1] as Stage | undefined;
   if (current === "repair" || current === "summary" || current === "pdf") {
     const d = stageRunDecision(a.run, current, job.updatedAt);
-    if (d.action === "busy") return job;
+    if (d.action === "busy") {
+      // Surface wait state so clients keep polling instead of looking "frozen".
+      const left = Math.max(1, Math.ceil((RUN_LEASE_MS - (Date.now() - (a.run?.at ?? job.updatedAt))) / 1000));
+      a.progressDetail = { stage: current, label: `${stageLabel(current)} · server still working (retry in ~${left}s)` };
+      const [busy] = await db.update(schema.jobs).set({ artifacts: JSON.stringify(a) }).where(eq(schema.jobs.id, jobId)).returning();
+      return busy;
+    }
     if (d.action === "fail") {
       delete a.run;
       const err = `${current}: stalled — ${d.runs} runs never finished (invocation timed out/crashed); retry to resume`;
