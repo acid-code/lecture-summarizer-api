@@ -1,5 +1,6 @@
 import katex from "katex";
 import type { LectureSummary } from "../providers/types";
+import { isQuestionSection } from "../providers/prompts";
 import type { Figure } from "../figures";
 
 /** Coerce any model-emitted value (number/object/array/null) to text so `.replace` never crashes. */
@@ -205,6 +206,10 @@ header{padding:30px 44px 22px}h1{font-size:22pt;line-height:1.25;font-weight:800
 main{padding:0 44px}.ov{font-size:11pt;color:#475569;margin:6px 0 24px;max-width:94%}.thin{color:#64748B;font-size:9pt}
 .key{background:#FFFBEB;border:1px solid #FDE68A;border-radius:16px;padding:16px 22px 10px;margin:0 0 28px;break-inside:avoid}
 .kh{font-size:9pt;font-weight:700;color:#0F1F4D;letter-spacing:.5px;display:flex;align-items:center;gap:8px;margin-bottom:4px}.kh:before{content:"";width:18px;height:4px;border-radius:2px;background:#F2B705}
+.qnotes{background:#FFFBEB;border:1px solid #FDE68A;border-radius:12px;padding:12px 16px 6px;margin:12px 0 4px;break-inside:avoid}
+.qnotes .kh{margin-bottom:6px}.qnotes ul{margin:0;padding:0 16px 0 0}.qnotes li{margin-bottom:4px;font-size:10pt}
+.card.question{border-color:#FDE68A;box-shadow:0 1px 2px rgba(242,183,5,.08),0 4px 14px rgba(15,31,77,.05)}
+.badge-q{font-size:8pt;font-weight:700;color:#0F1F4D;background:#FEF3C7;border-radius:999px;padding:2px 10px;margin-inline-start:4px}
 ul{margin:0;padding:0 18px 0 0}li{margin-bottom:6px}li::marker{color:#94A3B8}p{margin:.35em 0}
 .card{border:1px solid #E5E7EB;border-radius:14px;padding:18px 22px 12px;margin:0 0 16px;box-shadow:0 1px 2px rgba(15,31,77,.04),0 4px 14px rgba(15,31,77,.05)}
 .sh{display:flex;align-items:baseline;gap:10px;margin-bottom:8px;flex-wrap:wrap;break-after:avoid}
@@ -228,16 +233,30 @@ export function renderStudyHtml(s0: LectureSummary, figures: Figure[] = [], meta
   const figs = (i: number) => ok.filter((f) => f.section === i || (i === secs.length - 1 && (f.section < 0 || f.section >= secs.length))).map(renderFigure).join("");
   const chips = [meta.course, meta.lecture, fmtDate(meta.date)].filter((x) => str(x).trim()).map((x) => `<span class="chip">${bidi(x)}</span>`).join("")
     + (str(meta.level).trim() ? `<span class="chip lvl">רמה: <b>${bidi(meta.level)}</b></span>` : "");
-  // Key points: first bullet of the first 4 sections (presentation only; summary content unchanged).
-  const keys = secs.slice(0, 4).map((x) => arr(x?.bullets)[0]).filter((b) => str(b).trim());
+  // Key points: first important_note or first bullet of the first 4 spoken sections.
+  const keys = secs.slice(0, 4).map((x) => arr(x?.important_notes)[0] ?? arr(x?.bullets)[0]).filter((b) => str(b).trim());
+  const modeChip = s.structure_mode === "questions" || secs.some((x) => isQuestionSection(x))
+    ? `<span class="chip lvl">מבנה: <b>שאלות</b></span>` : "";
+  const renderSec = (x: any, i: number) => {
+    const q = isQuestionSection(x);
+    const notes = arr<string>(x?.important_notes).map(str).filter((t) => t.trim());
+    const body = x?.style === "prose"
+      ? arr(x.bullets).map((b) => `<p>${bidi(b)}</p>`).join("")
+      : `<ul>${arr(x?.bullets).map((b) => `<li>${bidi(b)}</li>`).join("")}</ul>`;
+    // important_notes go through bidi() so KaTeX / \\( \\) / $$ $$ render like bullets — never esc()-only.
+    const notesHtml = notes.length
+      ? `<div class="qnotes"><div class="kh">הערות לפתרון</div><ul>${notes.map((n) => `<li>${bidi(n)}</li>`).join("")}</ul></div>`
+      : "";
+    return `<section class="card${q ? " question" : ""}"><div class="sh"><span class="num">${String(i + 1).padStart(2, "0")}</span><h2>${bidi(x?.heading)}</h2>${q ? `<span class="badge-q">שאלה</span>` : ""}${x?.citation ? renderCite(unent(x.citation)) : ""}</div>${body}${notesHtml}${figs(i)}</section>`;
+  };
   return `<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>${esc(s.title)}</title>
 <style>
 ${BRAND_CSS}
 </style></head><body>
-<div class="bar"></div><header><h1>${bidi(s.title)}</h1>${chips ? `<div class="meta">${chips}</div>` : ""}</header>
+<div class="bar"></div><header><h1>${bidi(s.title)}</h1>${chips || modeChip ? `<div class="meta">${chips}${modeChip}</div>` : ""}</header>
 <main>${s.transcript_thin ? `<p class="thin">שימו לב: התמלול של ההקלטה קצר/חסר ביחס לשקפים — חלק מהסיכום מבוסס על השקפים בלבד.</p>` : ""}${arr(s.overview).map((o) => `<p class="ov">${bidi(o)}</p>`).join("")}
 ${keys.length ? `<div class="key"><div class="kh">חשוב לזכור</div><ul>${keys.map((b) => `<li>${bidi(b)}</li>`).join("")}</ul></div>` : ""}
-${secs.map((x, i) => `<section class="card"><div class="sh"><span class="num">${String(i + 1).padStart(2, "0")}</span><h2>${bidi(x?.heading)}</h2>${x?.citation ? renderCite(unent(x.citation)) : ""}</div>${x?.style === "prose" ? arr(x.bullets).map((b) => `<p>${bidi(b)}</p>`).join("") : `<ul>${arr(x?.bullets).map((b) => `<li>${bidi(b)}</li>`).join("")}</ul>`}${figs(i)}</section>`).join("\n")}
+${secs.map(renderSec).join("\n")}
 <div class="gt">מילון מונחים</div><dl class="gl">${mergedGlossary(s).map((g) => `<div class="term"><dt>${bidi(g?.term)}</dt><dd>${bidi(g?.explanation)}</dd></div>`).join("")}</dl>
 ${renderBigPicture(s.big_picture ? { ...s.big_picture, missed_terms: [] } : s.big_picture)}
 <div class="sign">${SIGN_OFF}</div></main>

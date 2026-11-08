@@ -148,6 +148,33 @@ after the summary and glossary — it supplements the summary and never replaces
   topics the lecture did not touch. If the lecture is too short/thin to say anything useful, set "big_picture": null.
 - Same MATH rules apply (KaTeX delimiters).`;
 
+/** KaTeX delimiters — required in every summary field that may contain formulas (bullets, important_notes, glossary, overview). */
+export const MATH_RULES = `MATH (rendered with KaTeX — undelimited TeX prints as garbage in the RTL PDF):
+- EVERY formula, equation, symbol or expression MUST be wrapped: inline \\( ... \\), display $$ ... $$. This includes single symbols (\\(\\varepsilon\\), \\(\\delta\\), \\(|H|\\)).
+- Apply the same delimiters inside "important_notes", glossary explanations, and overview — never leave bare \\frac / \\varepsilon in those fields.
+- NEVER write a bare \\command (\\frac, \\varepsilon, \\ln, \\le ...) in prose outside delimiters. Never write HTML entities (&gt;, &lt;) — use > < or \\le \\ge inside math.
+- Never put Hebrew inside math; keep each formula LTR and self-contained (Hebrew words go outside the delimiters).
+- Prefer standard ASCII/TeX notation for PAC/ML symbols: \\varepsilon, \\delta, e_P(h), |H|, \\mathbb{P}, m(\\varepsilon,\\delta).
+- Escape backslashes correctly for JSON (\\\\frac in the JSON string).`;
+
+/**
+ * Choose topics vs questions layout from content (title like תרגול is only a weak prior).
+ * Ambiguous → topics.
+ */
+export const STRUCTURE_MODE = `STRUCTURE MODE (set "structure_mode" on the root JSON):
+- Prefer "questions" when the session is a drill/quiz/problem walkthrough: enumerated שאלות / Q / Exercise / תרגיל N,
+  worksheet order, short problem→solve→next cycles, TA reading a problem sheet aloud. Title words like תרגול/Tutorial/recitation
+  are a WEAK prior only — a theory tutorial stays "topics"; a lecture that is clearly quiz-oriented may be "questions".
+- Prefer "topics" for continuous explanation / theory. If ambiguous, use "topics".
+When structure_mode is "questions":
+- One section per question (heading "שאלה N: …" short stem, not the full problem text). Set each section's "kind":"question".
+- Section "citation" MUST include [slide N] or [slides N-M] when the matching PDF/slide page(s) are identifiable, plus [t=…] for the spoken solve.
+- "bullets": what was asked + how it was solved (length follows density).
+- "important_notes": array of short Hebrew lines for THIS question's solving tips, traps, exam hints the teacher said.
+  ALWAYS include when spoken — including density "standard" (compact: 1-3 lines; detailed: more detail). Same MATH delimiters as bullets.
+  Do not bury question-specific tips only in "דגשים חשובים של המרצה".
+When structure_mode is "topics": omit "kind"/"important_notes" (or leave important_notes empty); usual spoken-topic sections.`;
+
 /** Transcript is "thin" when it is empty/very short, or tiny compared to the slide text. */
 export function isTranscriptThin(t: Transcript | undefined, slidesText?: string | null): boolean {
   const chars = (t?.segments ?? []).reduce((n, s) => n + s.text.trim().length, 0);
@@ -173,15 +200,11 @@ Slides / materials:
 ${slidesForSummary(slides,40000,20000)}
 Course-pack excerpts: ${ctx.courseExcerpts?.(slides.slice(0, 4000), 6000) || "(none)"}
 Also return memory_pairs: 8-16 unique matching-game pairs when the material supports them (fewer rather than invented facts). Each term is concise (up to 40 characters), and each definition is a short, Hebrew-friendly single clause (up to 100 characters), grounded ONLY in this lecture. Do not add model calls for these pairs.
-Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}],"memory_pairs":[{"term","definition"}],"big_picture":{"intent","themes":[{"title","explanation"}],"missed_terms":[{"term","explanation"}]}}.
+${STRUCTURE_MODE}
+Return JSON {"title","overview","transcript_thin":boolean,"structure_mode":"topics"|"questions","sections":[{"heading","kind":"question"?,"bullets":[],"important_notes":[]?,"citation"}],"glossary":[{"term","explanation"}],"memory_pairs":[{"term","definition"}],"big_picture":{"intent","themes":[{"title","explanation"}],"missed_terms":[{"term","explanation"}]}}.
 "title" = the lecture topic only; never add a lecture number ("הרצאה 1", "Lecture 3") unless that exact number is in the lecture title given above.
 ${BIG_PICTURE}
-MATH (rendered with KaTeX — undelimited TeX prints as garbage in the RTL PDF):
-- EVERY formula, equation, symbol or expression MUST be wrapped: inline \\( ... \\), display $$ ... $$. This includes single symbols (\\(\\varepsilon\\), \\(\\delta\\), \\(|H|\\)).
-- NEVER write a bare \\command (\\frac, \\varepsilon, \\ln, \\le ...) in prose outside delimiters. Never write HTML entities (&gt;, &lt;) — use > < or \\le \\ge inside math.
-- Never put Hebrew inside math; keep each formula LTR and self-contained (Hebrew words go outside the delimiters).
-- Prefer standard ASCII/TeX notation for PAC/ML symbols: \\varepsilon, \\delta, e_P(h), |H|, \\mathbb{P}, m(\\varepsilon,\\delta).
-- Escape backslashes correctly for JSON (\\\\frac in the JSON string).`;
+${MATH_RULES}`;
 }
 
 /** Slide text for the summary prompt: head of the deck plus the closing slides in full (end-of-deck summaries matter). */
@@ -324,16 +347,19 @@ Each === filename === block is a separate attached deck. Use ALL relevant decks.
 ${slidesForSummary(ctx.slidesText)}
 Course-pack excerpts: ${ctx.courseExcerpts?.(text, 6000) || "(none)"}
 Also return memory_pairs: ${depth.thin ? "0-4" : "8-16"} unique matching-game pairs when the material supports them (fewer rather than invented facts; [] is fine when thin). Each term is concise (up to 40 characters), and each definition is a short, Hebrew-friendly single clause (up to 100 characters), grounded ONLY in this lecture. Do not add model calls for these pairs.
-Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}],"memory_pairs":[{"term","definition"}],"big_picture":{"intent","themes":[{"title","explanation"}],"missed_terms":[{"term","explanation"}]}}.
+${STRUCTURE_MODE}
+Return JSON {"title","overview","transcript_thin":boolean,"structure_mode":"topics"|"questions","sections":[{"heading","kind":"question"?,"bullets":[],"important_notes":[]?,"citation"}],"glossary":[{"term","explanation"}],"memory_pairs":[{"term","definition"}],"big_picture":{"intent","themes":[{"title","explanation"}],"missed_terms":[{"term","explanation"}]}}.
 "title" = the lecture topic only; never add a lecture number ("הרצאה 1", "Lecture 3") unless that exact number is in the lecture title given above.
 ${BIG_PICTURE}
 Put cites inline at the end of bullets and in each section's "citation".
-MATH (rendered with KaTeX — undelimited TeX prints as garbage in the RTL PDF):
-- EVERY formula, equation, symbol or expression MUST be wrapped: inline \\( ... \\), display $$ ... $$. This includes single symbols (\\(\\varepsilon\\), \\(\\delta\\), \\(|H|\\)).
-- NEVER write a bare \\command (\\frac, \\varepsilon, \\ln, \\le ...) in prose outside delimiters. Never write HTML entities (&gt;, &lt;) — use > < or \\le \\ge inside math.
-- Never put Hebrew inside math; keep each formula LTR and self-contained (Hebrew words go outside the delimiters).
-- Prefer standard ASCII/TeX notation for PAC/ML symbols: \\varepsilon, \\delta, e_P(h), |H|, \\mathbb{P}, m(\\varepsilon,\\delta).
-- Escape backslashes correctly for JSON (\\\\frac in the JSON string).`;
+${MATH_RULES}`;
+}
+
+/** True for drill/question sections (explicit kind or Hebrew/English question heading). */
+export function isQuestionSection(s: { kind?: string; heading?: unknown }): boolean {
+  if (s.kind === "question") return true;
+  const h = typeof s.heading === "string" ? s.heading : s.heading == null ? "" : String(s.heading);
+  return /^(שאלה|תרגיל|Question|Exercise|Problem)\s*\d/i.test(h.trim());
 }
 
 /** Apply high-confidence repairs to the transcript (edits stay stored for review). */
@@ -349,9 +375,9 @@ export function applyRepairs(t: Transcript, repairs: Repair[], min = 0.6): Trans
   return { ...t, segments: segs.map((s) => ({ ...s, text: cleanHebrew(s.text) })) };
 }
 
-/** Spoken sections (excluding the professor-notes / slides-summary sections). */
+/** Spoken sections (excluding the professor-notes / slides-summary sections). Question sections count. */
 export function spokenSectionCount(s: { sections?: { heading?: string }[] }): number {
-  return (s.sections ?? []).filter((x) => !/דגשים חשובים|סיכום מהמצגת/.test(x.heading ?? "")).length;
+  return (s.sections ?? []).filter((x) => !/דגשים חשובים|סיכום מהמצגת|הערות לפתרון/.test(x.heading ?? "")).length;
 }
 /** Summary clearly under-produced vs depth target → worth one "expand" retry (only for gross under-production). */
 export function summaryTooShort(s: { sections?: { heading?: string; bullets?: string[] }[] }, t: Transcript, density: Density = "standard"): boolean {

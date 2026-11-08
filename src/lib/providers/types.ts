@@ -2,12 +2,23 @@ export interface Segment { start: number; end: number; text: string }
 export interface Transcript { language: string; segments: Segment[] }
 /** A proposed term fix with evidence — an edit list, never a rewritten transcript. */
 export interface Repair { segment?: number; span: string; replacement: string; evidence: string; confidence: number }
+export type StructureMode = "topics" | "questions";
+export interface SummarySection {
+  heading: string;
+  bullets: string[];
+  citation?: string;
+  /** style "prose": bullets are full paragraphs (rendered as <p>, not <li>). */
+  style?: "prose";
+  /** Present when structure_mode is "questions" (or inferred from heading). */
+  kind?: "question" | "topic";
+  /** Per-question solving tips / traps / exam hints (even at standard density). Same KaTeX rules as bullets. */
+  important_notes?: string[];
+}
 export interface LectureSummary {
   title: string;
   /** Hebrew RTL prose with English technical terms inline. */
   overview: string;
-  /** style "prose": bullets are full paragraphs (rendered as <p>, not <li>). */
-  sections: { heading: string; bullets: string[]; citation?: string; style?: "prose" }[];
+  sections: SummarySection[];
   glossary: { term: string; explanation: string }[];
   /** Short, grounded matching cards generated inside the existing summary job. */
   memory_pairs?: {term:string;definition:string}[];
@@ -15,6 +26,8 @@ export interface LectureSummary {
   transcript_thin?: boolean;
   /** Optional end-of-PDF "big picture" in English: main themes + what the lecture was trying to teach. Supplements, never replaces. */
   big_picture?: BigPicture | null;
+  /** "questions" = drill/quiz walkthrough; omit or "topics" = usual spoken-topic sections. */
+  structure_mode?: StructureMode;
 }
 export interface BigPicture {
   /** 2-4 sentences: what the lecturer was trying to teach and why the examples were chosen. */

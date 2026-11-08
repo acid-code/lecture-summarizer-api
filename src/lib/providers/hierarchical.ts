@@ -5,7 +5,7 @@
  * Pure w.r.t. the model: callers pass `J` (prompt → parsed JSON, with their own retry / quota handling).
  */
 import type { LectureContext, LectureSummary, Transcript } from "./types";
-import { NO_NIQQUD, slidesForSummary } from "./prompts";
+import { MATH_RULES, NO_NIQQUD, STRUCTURE_MODE, slidesForSummary } from "./prompts";
 
 export type JsonFn = <T = any>(prompt: string, opts?: { strong?: boolean }) => Promise<T>;
 export const HIER_PART_SEC = 600;
@@ -69,10 +69,11 @@ ${w.text}`)), part: w.label })));
     const dn = ctx.density ?? "standard";
     const nSec = Math.max(dn === "compact" ? 3 : 5, Math.round(end / 60 / (dn === "compact" ? 15 : dn === "detailed" ? 9 : 11)));
     st.outline = await Jc(`Build a study-guide outline for the lecture "${title}" (${mmss(0)}-${mmss(end)}) from these per-part notes. Sections must follow lecture order and together cover the FULL timeline (every part with real content belongs to some section; no gap >8 minutes except parts with no lecture content). ~${nSec} sections.
-Return JSON {"title","overview","sections":[{"heading","t_start","t_end","parts":["M:SS-M:SS"],"must_include":["..."]}]}.
+${STRUCTURE_MODE}
+Return JSON {"title","overview","structure_mode":"topics"|"questions","sections":[{"heading","kind":"question"?,"t_start","t_end","parts":["M:SS-M:SS"],"must_include":["..."]}]}.
 - "title": a real, specific HEBREW lecture title describing the main topics (English technical terms allowed inline)${genericTitle(title) ? "" : `; the course/lecture is "${title}" — keep that course name as prefix`}. Never a date or "Lecture - …".
 - "overview": 3-5 sentences in HEBREW (Hebrew script, English technical terms inline only). Not English.
-- Headings in Hebrew with English terms.
+- Headings in Hebrew with English terms. If structure_mode is "questions", headings are "שאלה N: …" and kind is "question".
 NOTES: ${JSON.stringify(parts)}`);
     if (!st.outline?.sections?.length) throw new Error("hierarchical outline empty");
   }
@@ -86,10 +87,13 @@ NOTES: ${JSON.stringify(parts)}`);
     const a = Math.max(0, (toSec(sec.t_start) ?? 0) - 30), b = (toSec(sec.t_end) ?? end) + 30;
     const raw = segs.filter((x) => x.start >= a && x.start <= b).map((x) => `[t=${mmss(x.start)}] ${x.text}`).join("\n");
     if (!raw.trim()) return null;
+    const asQuestion = sec.kind === "question" || outline.structure_mode === "questions" || /^(שאלה|תרגיל|Question|Exercise)\s*\d/i.test(String(sec.heading ?? ""));
     const prompt = `Write ONE section of a Hebrew study guide for "${title}". Heading: "${sec.heading}" (lecture ${sec.t_start}-${sec.t_end}).
 Write ${band.lo}-${band.hi} words of Hebrew study notes as short explanatory paragraphs with English technical terms inline (code-switch), split into ${band.paras} paragraphs. Each paragraph ends with a [t=M:SS] or [t=M:SS-M:SS] citation using only times from the transcript. Cover must_include: ${JSON.stringify(sec.must_include ?? [])}.
-This is a STUDY SUMMARY, not a retelling: never paraphrase the speech sentence by sentence. Distill definitions, rules, procedures, the key example (setup+method+result) and the numbers that matter; drop admin, anecdotes, repetitions.${dn === "detailed" ? " Explain reasoning and intuition where the lecturer did." : ""} At most ONE paragraph may start with "חשוב: " and only if the lecturer explicitly stressed it; otherwise do not use the word "חשוב". Formulas in \\( \\). ${NO_NIQQUD} No filler.
-Return JSON {"heading","paragraphs":[string],"citation":"[t=..]"}.
+This is a STUDY SUMMARY, not a retelling: never paraphrase the speech sentence by sentence. Distill definitions, rules, procedures, the key example (setup+method+result) and the numbers that matter; drop admin, anecdotes, repetitions.${dn === "detailed" ? " Explain reasoning and intuition where the lecturer did." : ""} At most ONE paragraph may start with "חשוב: " and only if the lecturer explicitly stressed it; otherwise do not use the word "חשוב". ${NO_NIQQUD} No filler.
+${asQuestion ? `This section is ONE drill question. Also return "important_notes": short lines (1-6) with solving tips/traps/exam hints the TA said for THIS question only — required when spoken, including for standard density. Citation should include [slide N] when identifiable.` : ""}
+${MATH_RULES}
+Return JSON {"heading","paragraphs":[string],"citation":"[t=..]","kind":${asQuestion ? `"question"` : `"topic"`},"important_notes":[string]}.
 STRUCTURED NOTES: ${JSON.stringify(rel)}
 TRANSCRIPT EXCERPT:
 ${raw}`;
@@ -101,7 +105,15 @@ ${raw}`;
       if (r2 && words(r2.paragraphs ?? []) > w) { r = r2; w = words(r2.paragraphs ?? []); }
     }
     log(`hier section "${sec.heading}" ${w}w`);
-    return { heading: r.heading || sec.heading, bullets: (r.paragraphs ?? []).map(String), citation: r.citation, style: "prose" };
+    const notes = Array.isArray(r.important_notes) ? r.important_notes.map(String).filter((x: string) => x.trim()) : [];
+    return {
+      heading: r.heading || sec.heading,
+      bullets: (r.paragraphs ?? []).map(String),
+      citation: r.citation,
+      style: "prose",
+      kind: asQuestion ? "question" : undefined,
+      important_notes: notes.length ? notes : undefined,
+    };
   };
   while (st.sections.length < outline.sections.length) {
     if (!timeLeft()) return null;
@@ -128,7 +140,8 @@ Section headings: ${sections.map((s) => s.heading).join(" | ")}`).catch(() => nu
     if (fix?.title && !genericTitle(fix.title)) outTitle = fix.title;
   }
   if (genericTitle(outTitle)) outTitle = title;
-  return { title: outTitle, overview, transcript_thin: false, sections, glossary };
+  const structure_mode = outline.structure_mode === "questions" || sections.some((s) => s.kind === "question") ? "questions" as const : "topics" as const;
+  return { title: outTitle, overview, transcript_thin: false, structure_mode, sections, glossary };
 }
 
 /** Convenience: run to completion (offline / tests). */
