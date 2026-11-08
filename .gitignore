@@ -16,3 +16,5 @@ data/
 *.wav
 *.ogg
 *.webm
+.vercel
+.env*

@@ -59,3 +59,22 @@ export function normalizeSegments(segs: ImportSegment[], language = "he"): Trans
   out.sort((x, y) => x.start - y.start);
   return { language, segments: stripSpeakers(out) };
 }
+
+/** Match Android CaptionQuality: thin captions on a long video must not start a study job. */
+export const LONG_VIDEO_SEC = 15 * 60;
+export const MIN_CAPTION_COVERAGE = 0.25;
+export const MIN_CAPTION_CHARS = 800;
+
+export function captionsUsable(t: Transcript, videoDurationSec?: number | null): boolean {
+  const segs = t.segments ?? [];
+  if (!segs.length) return false;
+  const chars = segs.reduce((n, s) => n + s.text.trim().length, 0);
+  const video = Number(videoDurationSec);
+  const hasVideo = Number.isFinite(video) && video > 0;
+  if (!hasVideo) return chars >= 200;
+  if (video! < LONG_VIDEO_SEC) return chars > 0;
+  if (chars < MIN_CAPTION_CHARS) return false;
+  const end = Math.max(...segs.map((s) => s.end));
+  if (end < video! * MIN_CAPTION_COVERAGE) return false;
+  return true;
+}

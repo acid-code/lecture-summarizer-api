@@ -18,7 +18,7 @@ import { deleteFileUrl } from "../storage";
 import { materialsText, advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, resumeStage, jobDensity, retryJob, type Artifacts } from "../pipeline";
 import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
 import { blobAccess, isAcceptableUploadUrl, readFileUrl, saveFile } from "../storage";
-import { normalizeSegments, parseSrt, type ImportSegment } from "../transcript-import";
+import { captionsUsable, normalizeSegments, parseSrt, type ImportSegment } from "../transcript-import";
 import { cleanHebrew, stripNiqqud } from "../providers/prompts";
 
 const j = (b: unknown, status = 200) => Response.json(b, { status });
@@ -346,7 +346,7 @@ export async function startProcess(req: Request, lid: string) {
 export async function importTranscript(req: Request, lid: string) {
   const l = await lectureOr404(lid); if (!l) return notFound();
   const ct = req.headers.get("content-type") ?? "";
-  let body: { source?: string; external_id?: string; title?: string; language?: string; segments?: ImportSegment[]; srt?: string };
+  let body: { source?: string; external_id?: string; title?: string; language?: string; segments?: ImportSegment[]; srt?: string; video_duration_sec?: number };
   if (ct.includes("application/json")) body = (await req.json().catch(() => null)) ?? {};
   else body = { srt: await req.text() };
   const url = new URL(req.url).searchParams;
@@ -356,6 +356,13 @@ export async function importTranscript(req: Request, lid: string) {
     : Array.isArray(body.segments) ? normalizeSegments(body.segments, language) : null;
   if (!asr) return j({ error: "provide segments[] or an SRT body" }, 400);
   if (!asr.segments.length) return j({ error: "transcript has no timed segments" }, 422);
+  const videoDurationSec = Number(body.video_duration_sec ?? url.get("video_duration_sec"));
+  if (!captionsUsable(asr, Number.isFinite(videoDurationSec) ? videoDurationSec : null)) {
+    return j({ error: "captions too short relative to video length; use audio instead", code: "transcript_thin_vs_video",
+      video_duration_sec: Number.isFinite(videoDurationSec) ? videoDurationSec : null,
+      caption_end_sec: Math.max(...asr.segments.map((s) => s.end)),
+      caption_chars: asr.segments.reduce((n, s) => n + s.text.trim().length, 0) }, 422);
+  }
   const source = String(body.source || url.get("source") || "panopto").slice(0, 40);
   const externalId = body.external_id ?? url.get("external_id") ?? undefined;
   if (typeof body.title === "string" && body.title.trim()) await db.update(schema.lectures).set({ title: body.title.trim() }).where(eq(schema.lectures.id, lid));
