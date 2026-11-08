@@ -28,6 +28,16 @@ test("whitespace-tolerant quotes still ground",()=>{
  assert.equal(matchQuote(source.text,"Enzymes generate ATP"),null);
 });
 
+test("answer prompt requires KaTeX delimiters and numbered cite markers",async()=>{
+ let answerSystem="";let n=0;
+ const r=await runTutor("What is an enzyme?","en",[source],async(s)=>{if(n===0)answerSystem=s;return [answer,{supported:true,on_topic:true}][n++];});
+ assert.equal(r.kind,"answer");
+ assert.match(answerSystem,/inline \\\(/);
+ assert.match(answerSystem,/\$\$/);
+ assert.match(answerSystem,/\[1]/);
+ assert.match(answerSystem,/blank line/);
+});
+
 // Realistic transcript-only Biochemistry tutorial: pKa, net charge and alpha helices.
 const heSource:Source={id:"t:0",kind:"transcript",label:"Transcript",text:"בתרגול עסקנו ב-pKa ובמטען של חומצות אמינו. המטען תלוי בערך ה-pH. בפוליפפטיד מסוים הוצג סליל אלפא ב-pH 12 ומבנה אקראי ב-pH 7."};
 for(const question of ["מה הנקודות הקריטיות מההרצאה","מה הנקודות העיקריות של השיעור?","סכם לי את ההרצאה","תסביר לי את השיעור","בחן אותי על ההרצאה","Summarize this lecture","What are the key points of the lecture?","Explain this lecture","Quiz me on this lecture","מה זה pKa","הסבר לי על מטען חומצות אמינו","What is an enzyme?","Explain activation energy"]){
