@@ -24,3 +24,9 @@ test("moving changes only course_id and preserves summaries, transcript, slides 
  const after=await db.query.lectures.findFirst();assert.deepEqual(after,{...before,courseId:target});assert.deepEqual(await db.query.jobs.findMany(),jobs);assert.deepEqual(await db.query.lectureFiles.findMany(),files);
  assert.equal((await call(`lectures/${lid}/move`,"device-move-A",{course_id:target})).status,200);
 });
+
+test("newer failed summary is not hidden by an older still-running job",async()=>{
+ await db.insert(schema.jobs).values([{id:"older-running",lectureId:lid,stage:"pdf",updatedAt:2,artifacts:JSON.stringify({options:{density:"compact"}})},{id:"newer-failed",lectureId:lid,stage:"failed",updatedAt:3,artifacts:JSON.stringify({options:{density:"compact"}})}]);
+ const r=await route(new Request(`http://local/v1/lectures/${lid}/summaries`,{headers:{authorization:"Bearer test-token","x-device-id":"device-move-A"}}),{params:Promise.resolve({path:["lectures",lid,"summaries"]})});
+ const body=await r.json();assert.equal(body.densities.compact.running_job_id,null);assert.equal(body.densities.compact.failed_job_id,"newer-failed");
+});

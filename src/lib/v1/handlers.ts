@@ -468,7 +468,8 @@ export async function listSummaries(lid: string) {
   const out: Record<string, unknown> = {};
   for (const d of DENSITIES) {
     const done = jobs.find((x) => x.stage === "done" && jobDensity(JSON.parse(x.artifacts)) === d);
-    const running = jobs.find((x) => x.stage !== "done" && x.stage !== "failed" && jobDensity(JSON.parse(x.artifacts)) === d && (!done || x.updatedAt > done.updatedAt));
+    const latest=jobs.find(x=>jobDensity(JSON.parse(x.artifacts))===d);
+    const running=latest&&latest.stage!=="done"&&latest.stage!=="failed"&&(!done||latest.updatedAt>done.updatedAt)?latest:undefined;
     const failed=jobs.find(x=>x.stage==="failed"&&jobDensity(JSON.parse(x.artifacts))===d&&(!done||x.updatedAt>done.updatedAt));
     out[d] = { done_job_id: done?.id ?? null, updated_at: done ? new Date(done.updatedAt).toISOString() : null, running_job_id: running?.id ?? null, running_stage:running?.stage??null, failed_job_id:running?null:failed?.id??null };
   }
