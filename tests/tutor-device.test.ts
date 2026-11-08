@@ -27,6 +27,6 @@ test("persistent daily bucket survives minute windows; retry-after and next day 
 test("course context includes sibling lectures, keeps current first and rejects other devices",async()=>{
  const ownerCourse=(await db.query.lectures.findMany()).find((x:any)=>x.id===aid).courseId;
  const sibling=(await call("POST","lectures",A,{course_id:ownerCourse,title:"Next lecture",recorded_at:"2026-11-03T08:00:00Z"})).body.lecture_id;
- await db.insert(schema.jobs).values({id:"course-sibling-job",lectureId:sibling,stage:"done",updatedAt:5,artifacts:JSON.stringify({asr:{segments:[{start:0,text:"Sibling-course concept: protein folding."}]}})});
- const sources=await lectureSources(aid,A);assert.ok(sources[0].id.startsWith(aid));assert.ok(sources.some((s:any)=>s.text.includes("Sibling-course concept")));assert.ok(sources.every((s:any)=>!s.text.includes("other-secret")));assert.deepEqual(await lectureSources(aid,B),[]);
+ await db.insert(schema.jobs).values({id:"course-sibling-job",lectureId:sibling,stage:"done",updatedAt:5,artifacts:JSON.stringify({asr:{segments:[{start:0,text:"Sibling-course concept: protein folding."}]},summary:{overview:"Sibling lecture summary: protein folding."}})});
+ const sources=await lectureSources(aid,A);assert.ok(sources[0].id.startsWith(aid));assert.ok(sources.some((s:any)=>s.text.includes("Sibling-course concept")));assert.ok(sources.some((s:any)=>s.kind==="summary"&&s.label.includes("2026-11-03")&&s.text.includes("Sibling lecture summary")));assert.ok(sources.every((s:any)=>!s.text.includes("other-secret")));assert.deepEqual(await lectureSources(aid,B),[]);
 });

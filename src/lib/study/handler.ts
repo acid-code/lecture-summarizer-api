@@ -19,12 +19,15 @@ export async function lectureSources(lid:string,deviceId:string):Promise<Source[
  for(const lecture of lectures){
   const label=`${lecture.title} · ${lecture.recordedAt??"date unavailable"}`;let remaining=budget;
   const add=(kind:Source["kind"],text:string,prefix:string)=>{if(remaining<=0)return;const bounded=text.slice(0,remaining);remaining-=bounded.length;out.push(...chunks(kind,label,bounded,`${lecture.id}:${prefix}`));};
-  const jobs=await db.query.jobs.findMany({where:eq(schema.jobs.lectureId,lecture.id),orderBy:desc(schema.jobs.updatedAt),limit:12});
-  let transcript=false,summary=false;
+  const jobs=await db.query.jobs.findMany({where:eq(schema.jobs.lectureId,lecture.id),orderBy:desc(schema.jobs.updatedAt)});
+  let transcriptText="",summaryText="";
   for(const job of jobs){let a:Record<string,any>;try{a=JSON.parse(job.artifacts);}catch{continue;}
-   if(!transcript){const t=[a.repaired,a.asr].find(t=>Array.isArray(t?.segments)&&t.segments.length);if(t){add("transcript",t.segments.map((s:any)=>`[${Number(s.start)||0}s] ${typeof s.text==="string"?s.text:""}`).join("\n").slice(0,Math.floor(budget*.65)),"t");transcript=true;}}
-   if(!summary&&job.stage==="done"&&a.summary){add("summary",strings(a.summary).join("\n").slice(0,Math.floor(budget*.15)),"s");summary=true;}
+   if(!transcriptText){const t=[a.repaired,a.asr].find(t=>Array.isArray(t?.segments)&&t.segments.length);if(t)transcriptText=t.segments.map((s:any)=>`[${Number(s.start)||0}s] ${typeof s.text==="string"?s.text:""}`).join("\n");}
+   if(!summaryText&&job.stage==="done"&&a.summary)summaryText=strings(a.summary).join("\n");
   }
+  // Summary-first context keeps every lecture's main ideas available for generic queries.
+  add("summary",summaryText.slice(0,Math.floor(budget*.55)),"s");
+  add("transcript",transcriptText.slice(0,Math.floor(budget*.35)),"t");
   const files=await db.query.lectureFiles.findMany({where:and(eq(schema.lectureFiles.lectureId,lecture.id),eq(schema.lectureFiles.kind,"slides")),orderBy:schema.lectureFiles.createdAt});
   const deckBudget=Math.floor(remaining/Math.max(1,files.filter(f=>f.text).length));
   for(const [i,f] of files.entries()){if(!f.text)continue;const range=storedSlideRange(f.slideRange);const text=f.text.split("\f").filter((_,p)=>!range||(p+1>=range.start&&p+1<=range.end)).join("\n");add("slides",text.slice(0,deckBudget),`d${i}`);}
