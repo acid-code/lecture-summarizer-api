@@ -392,3 +392,15 @@ export const geminiProvider: AiProvider = {
     return hierarchicalStep(t, ctx, <T,>(p: string) => json<T>([p]), state, deadline);
   },
 };
+
+/** Lecture tutor uses the SAME key/model retry ladder as ASR and summaries. No tools/web access. */
+export async function tutorJson(system:string,payload:unknown):Promise<unknown>{
+  const signal=AbortSignal.timeout(25000);
+  const result=await withRetry((model,ai)=>{
+    if(signal.aborted)throw new Error("tutor_deadline");
+    return ai.models.generateContent({model,contents:JSON.stringify(payload),config:{
+      systemInstruction:system,responseMimeType:"application/json",temperature:0,maxOutputTokens:2400,httpOptions:{timeout:20000},abortSignal:signal,
+    }});
+  });
+  return JSON.parse(extractJson(result.text ?? ""));
+}

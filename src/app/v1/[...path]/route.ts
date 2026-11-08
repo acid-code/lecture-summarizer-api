@@ -27,6 +27,7 @@ async function route(req: Request, { params }: Ctx) {
   try {
     if (a === "devices" && b === "claim" && !c && m === "POST") return h.claimCourses(req, dev);
     if (a === "devices" && b === "me" && !c && m === "GET") return Response.json({ device_id: dev });
+    if(a==="lectures"&&b&&c==="tutor"&&m==="POST"&&!dev)return Response.json({error:"device_required"},{status:401});
     // Ownership gate: anything addressed by id must belong to this device (else 404, never 403).
     // Covers every GET/POST/DELETE under /courses/{id}, /lectures/{id}, /jobs/{id} (files, segments, markers, process, retry, ...).
     if (a === "courses" && b && !(await h.ownsCourse(dev, b))) return notFound();
@@ -44,6 +45,7 @@ async function route(req: Request, { params }: Ctx) {
     if (a === "lectures" && !b && m === "POST") return h.createLecture(req, dev);
     if (a === "lectures" && b) {
       if (!c && m === "GET") return h.getLecture(b);
+      if(c==="tutor"&&!d&&m==="POST"){const {tutorHandler}=await import("@/lib/study/handler");return tutorHandler(req,b,dev);}
       if (!c && m === "DELETE") return h.deleteLecture(b);
       if (c === "slides" && !d && m === "GET") return h.slideCapabilities(b);
       if (c === "slides" && !d && m === "DELETE") return h.clearLectureSlides(b);
@@ -79,6 +81,7 @@ async function route(req: Request, { params }: Ctx) {
       if (c === "resummarize" && m === "POST") return h.postResummarize(req, b);
     }
   } catch (e) {
+    if(a==="lectures"&&c==="tutor")return Response.json({error:"tutor_unavailable"},{status:503});
     return Response.json({ error: (e as Error).message }, { status: 400 });
   }
   return notFound();

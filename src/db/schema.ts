@@ -83,3 +83,6 @@ export const jobs = sqliteTable("jobs", {
   artifacts: text("artifacts").notNull().default("{}"),
   updatedAt: integer("updated_at").notNull(),
 });
+
+/** Ephemeral tutor request counters only; no questions, answers or raw device IDs. */
+export const tutorBuckets=sqliteTable("tutor_buckets",{bucketKey:text("bucket_key").primaryKey(),hits:integer("hits").notNull(),expiresAt:integer("expires_at").notNull()});
