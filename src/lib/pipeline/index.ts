@@ -9,7 +9,7 @@ import { retrieveExcerpts } from "../context";
 import { htmlToPdf } from "../pdf";
 import { parseDensity, type Density } from "../providers/types";
 import { getProvider, type AudioInput, type LectureContext, type Repair, type Transcript, type LectureSummary } from "../providers";
-import { applyRepairs, isTranscriptThin, cleanTranscript } from "../providers/prompts";
+import { applyRepairs, isTranscriptThin, cleanTranscript, transcriptSpanSec, transcriptChars } from "../providers/prompts";
 import { dedupeTranscript } from "../providers/dedupe";
 import { GeminiOverloadedError, overloadHoldMs } from "../providers/overload";
 import { deleteFileUrl, saveArtifact } from "../storage";
@@ -469,8 +469,16 @@ export async function advanceJob(jobId: string) {
     // Multi-density request: once the first summary is done, spawn one sibling job per extra level (reuses ASR+repair).
     if (ns === "done" && a.options?.densities?.length) {
       const extra = a.options.densities.filter((x) => x !== jobDensity(a));
+      const tr = a.repaired ?? a.asr;
+      // Detailed quotas used to force hallucination on ~14s / incomplete ASR — skip that sibling.
+      const thinInput = !!a.asrIncomplete || !tr?.segments?.length
+        || transcriptSpanSec(tr) < 180 || transcriptChars(tr) < 800 || isTranscriptThin(tr, lecture.slidesText);
+      const spawn = thinInput ? extra.filter((d) => d !== "detailed") : extra;
+      if (thinInput && extra.includes("detailed")) {
+        console.warn(`skipping detailed density sibling — thin/incomplete ASR (${transcriptSpanSec(tr ?? { language: "he", segments: [] })}s)`);
+      }
       a.options = { ...a.options, densities: undefined };
-      for (const d of extra) await cloneForDensity(job.lectureId, a, d);
+      for (const d of spawn) await cloneForDensity(job.lectureId, a, d);
     }
     const [row] = await db.update(schema.jobs)
       .set({ stage: next ?? "done", artifacts: JSON.stringify(a), error: null, updatedAt: Date.now() })

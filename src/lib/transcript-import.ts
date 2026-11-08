@@ -64,17 +64,26 @@ export function normalizeSegments(segs: ImportSegment[], language = "he"): Trans
 export const LONG_VIDEO_SEC = 15 * 60;
 export const MIN_CAPTION_COVERAGE = 0.25;
 export const MIN_CAPTION_CHARS = 800;
+/** Full-session SRT paired with a short clip (e.g. 14s podcast) must not become the study transcript. */
+export const MAX_CAPTION_OVERSHOOT_RATIO = 1.35;
+export const MAX_CAPTION_OVERSHOOT_SLACK_SEC = 90;
+
+export function captionsOvershootVideo(captionEndSec: number, videoDurationSec: number): boolean {
+  const limit = Math.max(videoDurationSec * MAX_CAPTION_OVERSHOOT_RATIO, videoDurationSec + MAX_CAPTION_OVERSHOOT_SLACK_SEC);
+  return captionEndSec > limit;
+}
 
 export function captionsUsable(t: Transcript, videoDurationSec?: number | null): boolean {
   const segs = t.segments ?? [];
   if (!segs.length) return false;
   const chars = segs.reduce((n, s) => n + s.text.trim().length, 0);
+  const end = Math.max(...segs.map((s) => s.end));
   const video = Number(videoDurationSec);
   const hasVideo = Number.isFinite(video) && video > 0;
   if (!hasVideo) return chars >= 200;
+  if (captionsOvershootVideo(end, video!)) return false;
   if (video! < LONG_VIDEO_SEC) return chars > 0;
   if (chars < MIN_CAPTION_CHARS) return false;
-  const end = Math.max(...segs.map((s) => s.end));
   if (end < video! * MIN_CAPTION_COVERAGE) return false;
   return true;
 }

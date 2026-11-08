@@ -194,21 +194,48 @@ export function slidesForSummary(slides?: string | null, head = 10000, tail = 50
     part.slice(0,perHead)+"\n…(middle slides omitted)…\nFINAL SLIDES (end of this deck):\n"+part.slice(-perTail)).join("\n");
 }
 
+export function transcriptSpanSec(t: Transcript): number {
+  const segs = t.segments ?? [];
+  if (!segs.length) return 0;
+  return Math.max(0, Math.max(...segs.map((x) => x.end)) - Math.min(...segs.map((x) => x.start)));
+}
+export function transcriptChars(t: Transcript): number {
+  return (t.segments ?? []).reduce((n, s) => n + s.text.trim().length, 0);
+}
+
 /** Target density scaled by spoken length and the chosen density level (standard = tight study notes). */
 export function depthTargets(t: Transcript, density: Density = "standard") {
-  const segs = t.segments ?? [];
-  const minutes = segs.length ? Math.max(1, (Math.max(...segs.map((x) => x.end)) - Math.min(...segs.map((x) => x.start))) / 60) : 0;
+  const spanSec = transcriptSpanSec(t);
+  const minutes = spanSec / 60;
+  const chars = transcriptChars(t);
+  // Short/thin clips must NOT inherit the old Math.max(1 min) / Math.max(4 sections) floors —
+  // those quotas made "detailed" invent a multi-section study pack from ~14s of speech.
+  // Span-based: a long timeline with sparse test/fixture text is NOT "thin" for section math.
+  const thin = minutes < 3 || (minutes < 15 && chars < 800);
+  if (thin) {
+    const sections = Math.max(1, Math.min(density === "compact" ? 1 : 2, Math.ceil(Math.max(chars, 1) / 400)));
+    return {
+      minutes: Math.round(minutes * 10) / 10,
+      sections,
+      bulletsLo: 1,
+      bulletsHi: density === "detailed" ? 4 : 3,
+      density,
+      thin: true as const,
+      chars,
+      spanSec: Math.round(spanSec),
+    };
+  }
   const long = minutes >= 90;
   if (density === "detailed") {
-    const sections = Math.min(long ? 36 : 28, Math.max(4, Math.round(minutes / (long ? 3.5 : 4))));
-    return { minutes: Math.round(minutes), sections, bulletsLo: long ? 5 : 4, bulletsHi: long ? 10 : 8, density };
+    const sections = Math.min(long ? 36 : 28, Math.max(1, Math.round(minutes / (long ? 3.5 : 4))));
+    return { minutes: Math.round(minutes), sections, bulletsLo: long ? 5 : 4, bulletsHi: long ? 10 : 8, density, thin: false as const, chars, spanSec: Math.round(spanSec) };
   }
   if (density === "compact") {
-    const sections = Math.min(14, Math.max(3, Math.round(minutes / 10)));
-    return { minutes: Math.round(minutes), sections, bulletsLo: 3, bulletsHi: 6, density };
+    const sections = Math.min(14, Math.max(1, Math.round(minutes / 10)));
+    return { minutes: Math.round(minutes), sections, bulletsLo: 3, bulletsHi: 6, density, thin: false as const, chars, spanSec: Math.round(spanSec) };
   }
-  const sections = Math.min(22, Math.max(4, Math.round(minutes / 6)));
-  return { minutes: Math.round(minutes), sections, bulletsLo: 4, bulletsHi: 8, density };
+  const sections = Math.min(22, Math.max(1, Math.round(minutes / 6)));
+  return { minutes: Math.round(minutes), sections, bulletsLo: 4, bulletsHi: 8, density, thin: false as const, chars, spanSec: Math.round(spanSec) };
 }
 
 const COMPRESSION = `COMPRESSION (this is a STUDY SUMMARY, not a transcript paraphrase):
@@ -222,6 +249,15 @@ const COMPRESSION = `COMPRESSION (this is a STUDY SUMMARY, not a transcript para
 /** Coverage + compression rules, scaled by density. */
 export function depthBlock(t: Transcript, density: Density = "standard") {
   const d = depthTargets(t, density);
+  if (d.thin) return `DEPTH & COVERAGE (${density.toUpperCase()} — THIN / SHORT INPUT):
+- Evidence is only ~${d.spanSec}s of speech (~${d.chars} characters). Output MUST stay tiny and strictly faithful.
+- At most ${d.sections} short spoken section(s), each with ${d.bulletsLo}-${d.bulletsHi} bullets. Sparse/empty is CORRECT.
+- Do NOT invent topics, examples, definitions, procedures, biotech/course lore, or anything not literally in the transcript/slides below.
+- "detailed" does NOT mean pad or hallucinate to fill a long study guide — never expand beyond the evidence.
+- Set "big_picture": null. Skip "דגשים חשובים של המרצה" and "סיכום מהמצגת" unless those notes/slides truly exist below.
+- Glossary: only terms actually spoken (0-5). memory_pairs: 0-4, or [] if nothing solid.
+- Overview: 1-2 Hebrew sentences that explicitly say the recording/transcript is very short, then state only what was said.
+- Never invent [t=…] times past the last transcript timestamp.`;
   if (density === "detailed") return `DEPTH & COVERAGE (DETAILED level — thorough notes):
 - Cover EVERY distinct subject, sub-topic, example and digression the lecturer spent real time on, in spoken order. A topic
   change in the transcript = its own section; never merge unrelated topics to save space.
@@ -229,6 +265,7 @@ export function depthBlock(t: Transcript, density: Density = "standard") {
 - About ${d.sections} spoken-topic sections, each with ${d.bulletsLo}-${d.bulletsHi} bullets of 1-3 information-dense sentences.
 - Keep the SPECIFICS: numbers, units, thresholds, named examples, procedures, derivations, comparisons, exceptions.
 - Still no near-verbatim retelling and no filler: admin/anecdotes at most briefly. Length comes from content, not wordiness.
+- If (and only if) the transcript were short/thin, you would stay short — never invent to look "detailed".
 ${emphasisRules(d)}`;
   return `DEPTH & COVERAGE (${density.toUpperCase()} level):
 ${COMPRESSION}
@@ -252,7 +289,9 @@ function emphasisRules(d: ReturnType<typeof depthTargets>) {
 export function summaryPrompt(t: Transcript, repairs: Repair[], ctx: LectureContext) {
   if (ctx.slidesOnly) return slidesOnlyPrompt(ctx);
   const text = t.segments.map((s) => s.text).join(" ");
-  const thin = isTranscriptThin(t, ctx.slidesText);
+  const density = ctx.density ?? "standard";
+  const depth = depthTargets(t, density);
+  const thin = isTranscriptThin(t, ctx.slidesText) || depth.thin;
   return `Write a structured study summary in Hebrew (keep English technical terms in English) for the lecture "${ctx.title}".
 SOURCE PRIORITY (strict) — the VOICE/transcript leads, slides only support it:
 1. PRIMARY = the repaired lecture transcript below (what the lecturer actually SAID). Build the summary around it:
@@ -276,7 +315,7 @@ CITATIONS (mixed, required):
 ${thin ? `WARNING: the transcript is empty or very short relative to the slides. Say so explicitly at the start of the
 overview (in Hebrew: the recording/transcript covers only a small part of the lecture), summarize what the transcript does
 contain with [t=…] cites, mark the rest as slide-only with [slide N], and set "transcript_thin": true.` : `Set "transcript_thin": false.`}
-${depthBlock(t, ctx.density ?? "standard")}
+${depthBlock(t, density)}
 PRIMARY SOURCE — transcript (lecture time M:SS):
 ${fmtTimed(t) || "(empty)"}
 Term repairs already applied: ${JSON.stringify(repairs)}
@@ -284,7 +323,7 @@ SUPPORTING CONTEXT — slides (glossary/structure/diagrams only; not the outline
 Each === filename === block is a separate attached deck. Use ALL relevant decks. Retain original slide numbers; when citing slides from multiple decks include the filename. Approximate focus ranges are uncertain; do not invent coverage or ignore the transcript.
 ${slidesForSummary(ctx.slidesText)}
 Course-pack excerpts: ${ctx.courseExcerpts?.(text, 6000) || "(none)"}
-Also return memory_pairs: 8-16 unique matching-game pairs when the material supports them (fewer rather than invented facts). Each term is concise (up to 40 characters), and each definition is a short, Hebrew-friendly single clause (up to 100 characters), grounded ONLY in this lecture. Do not add model calls for these pairs.
+Also return memory_pairs: ${depth.thin ? "0-4" : "8-16"} unique matching-game pairs when the material supports them (fewer rather than invented facts; [] is fine when thin). Each term is concise (up to 40 characters), and each definition is a short, Hebrew-friendly single clause (up to 100 characters), grounded ONLY in this lecture. Do not add model calls for these pairs.
 Return JSON {"title","overview","transcript_thin":boolean,"sections":[{"heading","bullets":[],"citation"}],"glossary":[{"term","explanation"}],"memory_pairs":[{"term","definition"}],"big_picture":{"intent","themes":[{"title","explanation"}],"missed_terms":[{"term","explanation"}]}}.
 "title" = the lecture topic only; never add a lecture number ("הרצאה 1", "Lecture 3") unless that exact number is in the lecture title given above.
 ${BIG_PICTURE}
@@ -317,11 +356,23 @@ export function spokenSectionCount(s: { sections?: { heading?: string }[] }): nu
 /** Summary clearly under-produced vs depth target → worth one "expand" retry (only for gross under-production). */
 export function summaryTooShort(s: { sections?: { heading?: string; bullets?: string[] }[] }, t: Transcript, density: Density = "standard"): boolean {
   const d = depthTargets(t, density);
-  if (d.minutes < 20) return false;
+  if (d.thin || d.minutes < 20) return false;
   const n = spokenSectionCount(s);
   const bullets = (s.sections ?? []).reduce((a, x) => a + (x.bullets?.length ?? 0), 0);
   const f = density === "detailed" ? 0.6 : 0.45;
   return n < Math.ceil(d.sections * f) || bullets < d.sections * d.bulletsLo * (density === "detailed" ? 0.5 : 0.4);
+}
+/** Summary padded far beyond thin evidence — typically a "detailed" hallucination. */
+export function summaryOvergrown(
+  s: { sections?: { heading?: string; bullets?: string[] }[]; glossary?: unknown[]; memory_pairs?: unknown[]; big_picture?: unknown },
+  t: Transcript,
+  density: Density = "standard",
+): boolean {
+  const d = depthTargets(t, density);
+  if (!d.thin) return false;
+  const n = spokenSectionCount(s);
+  const bullets = (s.sections ?? []).reduce((a, x) => a + (x.bullets?.length ?? 0), 0);
+  return n > d.sections + 1 || bullets > d.sections * d.bulletsHi + 2 || (s.glossary?.length ?? 0) > 6 || (s.memory_pairs?.length ?? 0) > 6 || !!s.big_picture;
 }
 export function expandNote(prevSections: number, t: Transcript, density: Density = "standard"): string {
   const d = depthTargets(t, density);
@@ -329,4 +380,10 @@ export function expandNote(prevSections: number, t: Transcript, density: Density
     `Rewrite it from the FULL transcript (beginning, middle AND end): about ${d.sections} spoken-topic sections with ` +
     `${d.bulletsLo}-${d.bulletsHi} bullets each, plus "דגשים חשובים של המרצה" and a glossary. ` +
     `Add the missing TOPICS — keep bullets concise study notes, never a sentence-by-sentence retelling.`;
+}
+export function shrinkNote(t: Transcript, density: Density = "standard"): string {
+  const d = depthTargets(t, density);
+  return `\n\nIMPORTANT — YOUR PREVIOUS ANSWER OVERGREW A THIN TRANSCRIPT (~${d.spanSec}s, ~${d.chars} chars). ` +
+    `Rewrite MUCH SHORTER and stay faithful: at most ${d.sections} section(s), ${d.bulletsLo}-${d.bulletsHi} bullets each, ` +
+    `glossary 0-5, memory_pairs 0-4, big_picture null. Delete invented topics. Sparse is correct.`;
 }

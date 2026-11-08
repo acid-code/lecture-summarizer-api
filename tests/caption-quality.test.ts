@@ -32,3 +32,8 @@ test("unknown duration near-empty rejected", () => {
   assert.equal(captionsUsable(t(10, 10), null), false);
   assert.equal(captionsUsable(t(200, 10), null), true);
 });
+
+test("short video rejects hour-long caption track", () => {
+  assert.equal(captionsUsable(t(500, 5547), 14.9), false);
+  assert.equal(captionsUsable(t(50, 14), 14.9), true);
+});

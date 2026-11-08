@@ -1,10 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { isTitleSlide } from "../src/lib/figures";
-import { depthTargets, summaryTooShort } from "../src/lib/providers/prompts";
+import { depthTargets, summaryTooShort, summaryOvergrown } from "../src/lib/providers/prompts";
 import { renderStudyHtml, cleanGlyphs } from "../src/lib/pipeline/render";
 
-const tr = (min: number) => ({ language: "he", segments: [{ start: 0, end: 10, text: "a" }, { start: min * 60 - 10, end: min * 60, text: "b" }] }) as any;
+const tr = (min: number) => ({ language: "he", segments: [
+  { start: 0, end: 10, text: "opening topic discussion ".repeat(40) },
+  { start: min * 60 - 10, end: min * 60, text: "closing topic discussion ".repeat(40) },
+] }) as any;
+const shortClip = {
+  language: "he",
+  segments: [
+    { start: 0, end: 3, text: "אז בשיעור היום אנחנו נדבר על ה-data pipeline." },
+    { start: 3, end: 7, text: "אנחנו נתמקד ב-pattern הכי נפוץ בתעשייה, שזה ה-ETL process." },
+    { start: 7, end: 13.5, text: "שזה אומר Extract, Transform ו-Load." },
+  ],
+} as any;
 
 test("title / cover slides are skipped", () => {
   assert.ok(isTitleSlide({ page: 1, text: "Lecture 3 Infinite Hypothesis Classes, VC Dimension November 1, 2026 Jonathan Berant Introduction", imageOps: 2 }));
@@ -17,7 +28,15 @@ test("depthTargets scales for a 120 min lecture", () => {
   assert.equal(d.minutes, 120);
   assert.ok(d.sections >= 30 && d.sections <= 36, String(d.sections));
   assert.ok(d.bulletsLo >= 5 && d.bulletsHi <= 10); // leaner bullets (Nov 2026 retune)
-  assert.equal(depthTargets(tr(10)).sections, 4);
+  assert.equal(depthTargets(tr(10)).sections, 2); // proportional: ~10/6, no fake 4-section floor
+});
+test("14s clip must not demand a multi-section detailed pack", () => {
+  const d = depthTargets(shortClip, "detailed");
+  assert.equal(d.thin, true);
+  assert.ok(d.sections <= 2, String(d.sections));
+  assert.ok(d.minutes < 1);
+  assert.ok(summaryOvergrown({ sections: [{ heading: "a", bullets: ["1", "2", "3", "4"] }, { heading: "b", bullets: ["1", "2", "3", "4"] }, { heading: "c", bullets: ["1", "2"] }], glossary: Array(8).fill({ term: "t", explanation: "e" }), big_picture: { intent: "x" } }, shortClip, "detailed"));
+  assert.ok(!summaryOvergrown({ sections: [{ heading: "a", bullets: ["1", "2"] }], glossary: [{ term: "ETL", explanation: "Extract Transform Load" }] }, shortClip, "detailed"));
 });
 test("4-section summary of 120 min lecture is too short", () => {
   const sec = { heading: "x", bullets: ["a", "b", "c"] };

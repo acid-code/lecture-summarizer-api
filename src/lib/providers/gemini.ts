@@ -2,7 +2,7 @@ import { slidesForSummary } from "./prompts";
 import { GoogleGenAI, createPartFromUri, type Part } from "@google/genai";
 import { readFileUrl } from "../storage";
 import { clipper } from "./clip";
-import { applyRepairs, repairPrompt, spellingPrompt, summaryPrompt, NO_NIQQUD, summaryTooShort, spokenSectionCount, expandNote, depthTargets } from "./prompts";
+import { applyRepairs, repairPrompt, spellingPrompt, summaryPrompt, NO_NIQQUD, summaryTooShort, summaryOvergrown, spokenSectionCount, expandNote, shrinkNote, depthTargets } from "./prompts";
 import { hierarchicalStep } from "./hierarchical";
 import type { AiProvider, Repair, LectureSummary, Transcript, WindowTranscript } from "./types";
 
@@ -383,6 +383,11 @@ export const geminiProvider: AiProvider = {
     const prompt = summaryPrompt(t, repairs, ctx);
     const first = unwrapSummary(await json<LectureSummary>([prompt]));
     const dn = ctx.density ?? "standard";
+    if (!ctx.slidesOnly && summaryOvergrown(first, t, dn)) {
+      console.warn(`summary overgrew thin transcript (${spokenSectionCount(first)} sections, ${dn}); retrying with shrink`);
+      const shrunk = await json<LectureSummary>([prompt + shrinkNote(t, dn)]).then(unwrapSummary).catch(() => null);
+      if (shrunk && (spokenSectionCount(shrunk) < spokenSectionCount(first) || !summaryOvergrown(shrunk, t, dn))) return shrunk;
+    }
     if (ctx.slidesOnly || !summaryTooShort(first, t, dn)) return first;
     console.warn(`summary too short (${spokenSectionCount(first)} sections, target ${depthTargets(t, dn).sections}, ${dn}); retrying with expand`);
     const second = await json<LectureSummary>([prompt + expandNote(spokenSectionCount(first), t, dn)]).then(unwrapSummary).catch(() => null);

@@ -358,9 +358,15 @@ export async function importTranscript(req: Request, lid: string) {
   if (!asr.segments.length) return j({ error: "transcript has no timed segments" }, 422);
   const videoDurationSec = Number(body.video_duration_sec ?? url.get("video_duration_sec"));
   if (!captionsUsable(asr, Number.isFinite(videoDurationSec) ? videoDurationSec : null)) {
-    return j({ error: "captions too short relative to video length; use audio instead", code: "transcript_thin_vs_video",
+    const end = (asr.segments ?? []).reduce((m, s) => Math.max(m, s.end), 0);
+    const videoOk = Number.isFinite(videoDurationSec) && videoDurationSec > 0;
+    const overshoot = videoOk && end > Math.max(videoDurationSec * 1.35, videoDurationSec + 90);
+    return j({ error: overshoot
+        ? "captions much longer than video length; use audio instead"
+        : "captions too short relative to video length; use audio instead",
+      code: overshoot ? "transcript_fat_vs_video" : "transcript_thin_vs_video",
       video_duration_sec: Number.isFinite(videoDurationSec) ? videoDurationSec : null,
-      caption_end_sec: Math.max(...asr.segments.map((s) => s.end)),
+      caption_end_sec: end,
       caption_chars: asr.segments.reduce((n, s) => n + s.text.trim().length, 0) }, 422);
   }
   const source = String(body.source || url.get("source") || "panopto").slice(0, 40);
