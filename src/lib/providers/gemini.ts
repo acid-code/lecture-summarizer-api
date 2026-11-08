@@ -399,7 +399,7 @@ export async function tutorJson(system:string,payload:unknown):Promise<unknown>{
   const result=await withRetry((model,ai)=>{
     if(signal.aborted)throw new Error("tutor_deadline");
     return ai.models.generateContent({model,contents:JSON.stringify(payload),config:{
-      systemInstruction:system,responseMimeType:"application/json",temperature:0,maxOutputTokens:2400,httpOptions:{timeout:20000},abortSignal:signal,
+      systemInstruction:system,responseMimeType:"application/json",temperature:0.25,maxOutputTokens:2400,httpOptions:{timeout:20000},abortSignal:signal,
     }});
   });
   return JSON.parse(extractJson(result.text ?? ""));

@@ -17,7 +17,7 @@ test("tutor uses strict system instructions and the shared multi-key failover",a
    const key=headers.get("x-goog-api-key")??"";keys.push(key);
    const body=JSON.parse(String(init?.body));
    assert.equal(body.systemInstruction.parts[0].text,"Strict fixture tutor system rule");
-   assert.equal(body.generationConfig.responseMimeType,"application/json");assert.ok(!body.tools);
+   assert.equal(body.generationConfig.temperature,0.25);assert.equal(body.generationConfig.responseMimeType,"application/json");assert.ok(!body.tools);
    assert.deepEqual(JSON.parse(body.contents[0].parts[0].text),{question:"enzyme"});
    if(key==="fixture-rejected-key")return new Response(JSON.stringify({error:{code:400,message:"API key not valid. Please pass a valid API key.",status:"INVALID_ARGUMENT"}}),{status:400,headers:{"content-type":"application/json"}});
    assert.equal(key,"fixture-working-key");
