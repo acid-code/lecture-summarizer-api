@@ -13,9 +13,16 @@ function strings(x:unknown):string[]{if(typeof x==="string")return [x];if(Array.
 export async function lectureSources(lid:string,deviceId:string):Promise<Source[]>{
  if(!await ownsLecture(deviceId,lid))return [];
  const current=await db.query.lectures.findFirst({where:eq(schema.lectures.id,lid)});if(!current)return [];
+ const course=await db.query.courses.findFirst({where:eq(schema.courses.id,current.courseId)});
  const lectures=await db.query.lectures.findMany({where:eq(schema.lectures.courseId,current.courseId)});
  lectures.sort((a,b)=>Number(b.id===lid)-Number(a.id===lid)||(b.recordedAt??"").localeCompare(a.recordedAt??"")||a.id.localeCompare(b.id));
  const budget=Math.max(1,Math.min(10000,Math.floor(120000/Math.max(1,lectures.length))));const out:Source[]=[];
+ // Course-context pack first so free-text can correlate textbooks/syllabus with every lecture.
+ let contextBudget=24000;
+ const addContext=(label:string,text:string,prefix:string)=>{if(contextBudget<=0||!text.trim())return;const bounded=text.slice(0,contextBudget);contextBudget-=bounded.length;out.push(...chunks("context",label.slice(0,160),bounded,prefix));};
+ const courseFiles=await db.query.courseFiles.findMany({where:eq(schema.courseFiles.courseId,current.courseId),orderBy:schema.courseFiles.createdAt});
+ for(const [i,f] of courseFiles.entries()){if(f.text?.trim())addContext(`Course context · ${f.name}`,f.text,`course:c${i}`);}
+ if(!courseFiles.some(f=>f.text?.trim())&&course?.contextText?.trim())addContext("Course context",course.contextText,"course:legacy");
  for(const lecture of lectures){
   const label=`${lecture.title} · ${lecture.recordedAt??"date unavailable"}`;let remaining=budget;
   const add=(kind:Source["kind"],text:string,prefix:string)=>{if(remaining<=0)return;const bounded=text.slice(0,remaining);remaining-=bounded.length;out.push(...chunks(kind,label,bounded,`${lecture.id}:${prefix}`));};
