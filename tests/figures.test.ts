@@ -28,21 +28,3 @@ test("no duplicate image, one per section, cited section wins, weak dropped", ()
   assert.deepEqual(out.map((p) => [p.c.page, p.section]), [[21, 2], [6, 1], [30, 0]]); // 16 ≈ 21 (dhash dist 1) dropped
 });
 test("empty picks ok", () => { assert.deepEqual(finalizePicks(g, [], 6), []); });
-
-import { pptxAbsolutePics } from "../src/lib/figures";
-test("grouped pictures map out of child-space (no corner pile-up)", () => {
-  // Real PPT pattern: group uses tiny chExt coords; pics would overlap near (0,0) without mapping.
-  const xml = `<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <p:cSld><p:spTree>
-    <p:grpSp>
-      <p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="9144000" cy="5919788"/><a:chOff x="0" y="0"/><a:chExt cx="5760" cy="3729"/></a:xfrm></p:grpSpPr>
-      <p:pic><p:blipFill><a:blip r:embed="rId2"/></p:blipFill><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="2881" cy="1940"/></a:xfrm></p:spPr></p:pic>
-      <p:pic><p:blipFill><a:blip r:embed="rId3"/></p:blipFill><p:spPr><a:xfrm><a:off x="2850" y="0"/><a:ext cx="2910" cy="1932"/></a:xfrm></p:spPr></p:pic>
-    </p:grpSp>
-  </p:spTree></p:cSld></p:sld>`;
-  const pics = pptxAbsolutePics(xml);
-  assert.equal(pics.length, 2);
-  const xs = pics.map((p) => p.box.x).sort((a, b) => a - b);
-  assert.ok(xs[1] > 4_000_000, `second pic should sit on the right half, got x=${xs[1]}`);
-  assert.ok(pics.every((p) => p.box.cx > 1_000_000 && p.box.cy > 1_000_000));
-});

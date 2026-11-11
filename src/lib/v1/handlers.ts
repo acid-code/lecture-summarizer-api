@@ -15,7 +15,7 @@ import { bad, id, notFound } from "../http";
 import { dedupeTranscript } from "../providers/dedupe";
 import { getProvider } from "../providers";
 import { deleteFileUrl } from "../storage";
-import { materialsText, advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, resumeStage, jobDensity, retryJob, cancelJob, RUN_LEASE_MS, STUCK_MS, type Artifacts, type RetryFromStage } from "../pipeline";
+import { materialsText, advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, resumeStage, jobDensity, retryJob, cancelJob, RUN_LEASE_MS, STUCK_MS, type Artifacts } from "../pipeline";
 import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
 import { blobAccess, isAcceptableUploadUrl, readFileUrl, saveFile } from "../storage";
 import { captionsUsable, normalizeSegments, parseSrt, type ImportSegment } from "../transcript-import";
@@ -313,9 +313,7 @@ export async function startProcess(req: Request, lid: string) {
   const options = (await req.json().catch(() => ({})))?.options ?? {};
   { // density: single level; densities: several levels (one summary job each, ASR shared)
     const ds = (Array.isArray(options.densities) ? options.densities : []).map(parseDensity).filter(Boolean) as Density[];
-    // Prefer detailed as the primary job when multi-density (exam packs + derivation source); else first listed / detailed.
-    const prefer = (xs: Density[]) => (["detailed", "standard", "compact", "slides"] as Density[]).find((d) => xs.includes(d));
-    const d0 = parseDensity(options.density) ?? prefer(ds) ?? "detailed";
+    const d0 = parseDensity(options.density) ?? ds[0] ?? "standard";
     options.density = d0; options.densities = ds.length > 1 ? [...new Set(ds)] : undefined;
   }
   // Need audio or materials (lecture decks, or course files) — slides-only summaries don't need a recording.
@@ -397,41 +395,17 @@ function jobView(job: typeof schema.jobs.$inferSelect) {
     retry_after_sec: holdMs ? Math.ceil(holdMs / 1000) : leaseBusy ? Math.max(1, Math.ceil((RUN_LEASE_MS - (now - (a.run?.at ?? job.updatedAt))) / 1000)) : null,
     progress_detail: job.stage === "failed" || job.stage === "done" || a.progressDetail?.stage !== job.stage
       ? { stage: job.stage, label: job.stage === "asr" ? `ASR part ${(a.asrParts ?? 0) + 1}` : stageLabel(job.stage) }
-      : a.progressDetail,
-    attempt: a.run?.n ?? null,
-    hold_until: a.holdUntil && a.holdUntil > now ? new Date(a.holdUntil).toISOString() : null,
-    figures_note: a.figuresNote ?? null,
-    summary_sections: a.summary?.sections?.length ?? null,
-    hier_progress: a.hier ? { parts: a.hier.parts?.length ?? 0, sections: a.hier.sections?.length ?? 0, outline_sections: a.hier.outline?.sections?.length ?? null } : null,
-    queue_reason: a.asrQueued ? "asr_slot" : null,
-    cancelled: job.error === "cancelled_by_user" };
+      : a.progressDetail };
 }
 
 /**
- * Android only polls GET /v1/jobs/{id}; it never calls /advance. So by default a poll also runs work
+ * Android only polls GET /v1/jobs/{id}; it never calls /advance. So by default a poll also runs one unit of work
  * (AUTO_ADVANCE_ON_POLL=false to disable, e.g. when a cron/worker advances jobs).
- * Light stages (queued/asr) may advance several units in one poll so the queue does not idle 15s between windows.
- * Heavy stages (repair/summary/pdf) stay one unit — they already fill most of a Vercel invocation.
  */
 export async function getJob(jid: string, advance: boolean) {
   let job = await db.query.jobs.findFirst({ where: eq(schema.jobs.id, jid) });
   if (!job) return notFound();
-  if (advance && job.stage !== "done" && job.stage !== "failed") {
-    const budgetMs = Number(process.env.POLL_ADVANCE_BUDGET_MS || 50_000);
-    const maxSteps = Number(process.env.POLL_ADVANCE_MAX_STEPS || 6);
-    const deadline = Date.now() + budgetMs;
-    for (let i = 0; i < maxSteps; i++) {
-      const before: string = job.stage;
-      const beforeAt: number = job.updatedAt;
-      job = await advanceJob(jid);
-      if (job.stage === "done" || job.stage === "failed") break;
-      if (job.stage === "repair" || job.stage === "summary" || job.stage === "pdf") break;
-      if ((JSON.parse(job.artifacts) as Artifacts).asrQueued) break; // waiting for a global ASR slot
-      if (job.stage === before && job.updatedAt === beforeAt) break; // busy / overload hold
-      if (job.stage !== "queued" && job.stage !== "asr") break;
-      if (Date.now() >= deadline) break;
-    }
-  }
+  if (advance && job.stage !== "done" && job.stage !== "failed") job = await advanceJob(jid);
   return j(jobView(job));
 }
 
@@ -439,18 +413,10 @@ export async function postAdvance(jid: string) {
   try { return j(jobView(await advanceJob(jid))); } catch { return notFound(); }
 }
 
-/** POST /v1/jobs/{id}/retry[?force=1&from_stage=repair|summary|pdf] — reset failed/stuck (or done with from_stage) job. */
+/** POST /v1/jobs/{id}/retry[?force=1] — reset failed/stuck job to first incomplete stage, keep finished stage outputs. */
 export async function postRetry(req: Request, jid: string) {
-  const url = new URL(req.url);
-  const body = await req.json().catch(() => ({} as Record<string, unknown>));
-  const force = url.searchParams.get("force") === "1" || body?.force === true || body?.force === 1;
-  const raw = url.searchParams.get("from_stage") ?? (typeof body?.from_stage === "string" ? body.from_stage : null);
-  let fromStage: RetryFromStage | undefined;
-  if (raw != null) {
-    if (raw !== "repair" && raw !== "summary" && raw !== "pdf") return j({ error: "from_stage must be repair|summary|pdf" }, 400);
-    fromStage = raw;
-  }
-  const r = await retryJob(jid, force, fromStage);
+  const force = new URL(req.url).searchParams.get("force") === "1";
+  const r = await retryJob(jid, force);
   if (!r.ok && r.reason === "not_found") return notFound();
   if (!r.ok) return j({ ...jobView(r.job!), error: `job is ${r.job!.stage}; only failed or stuck jobs can be retried (use ?force=1 for a running job)` }, 409);
   return j(jobView(r.job), 202);
@@ -463,75 +429,15 @@ export async function postCancel(jid: string) {
   return j(jobView(r.job!), 202);
 }
 
-/** GET /v1/jobs — recent jobs; optional lecture_id, stage, state, stuck=1, limit. */
-export async function listJobs(dev: string | null = null, url?: URL) {
-  const lectureId = url?.searchParams.get("lecture_id") || undefined;
-  const stage = url?.searchParams.get("stage") || undefined;
-  const stateFilter = url?.searchParams.get("state") || undefined;
-  const stuckOnly = url?.searchParams.get("stuck") === "1";
-  const limit = Math.min(100, Math.max(1, Number(url?.searchParams.get("limit") || 20)));
-  const fetchN = stuckOnly || stateFilter ? Math.min(300, limit * 3) : limit;
-  const conds: SQL[] = [ownedBy(dev)];
-  if (lectureId) conds.push(eq(schema.jobs.lectureId, lectureId));
-  if (stage) conds.push(eq(schema.jobs.stage, stage as "queued" | "asr" | "repair" | "summary" | "pdf" | "done" | "failed"));
+/** GET /v1/jobs — 20 most recent jobs, for debugging without the phone's job id. */
+export async function listJobs(dev: string | null = null) {
   const rows = await db.select({ job_id: schema.jobs.id, lecture_id: schema.jobs.lectureId, stage: schema.jobs.stage, error: schema.jobs.error,
-    updated_at: schema.jobs.updatedAt, title: schema.lectures.title, artifacts: schema.jobs.artifacts })
+    updated_at: schema.jobs.updatedAt, title: schema.lectures.title })
     .from(schema.jobs).innerJoin(schema.lectures, eq(schema.lectures.id, schema.jobs.lectureId))
-    .innerJoin(schema.courses, eq(schema.courses.id, schema.lectures.courseId)).where(and(...conds))
-    .orderBy(desc(schema.jobs.updatedAt)).limit(fetchN);
-  const now = Date.now();
-  const mapped = rows.map((r) => {
-    const state = r.stage === "done" || r.stage === "failed" || r.stage === "queued" ? r.stage : "running";
-    const stuck = state === "running" && now - r.updated_at > STUCK_MS;
-    let density: string | null = null;
-    try { density = jobDensity(JSON.parse(r.artifacts) as Artifacts); } catch { /* ignore */ }
-    return { job_id: r.job_id, lecture_id: r.lecture_id, stage: r.stage, error: r.error, title: r.title,
-      state, stuck, density, updated_at: new Date(r.updated_at).toISOString() };
-  }).filter((r) => (!stateFilter || r.state === stateFilter) && (!stuckOnly || r.stuck));
-  return j(mapped.slice(0, limit));
-}
-
-/** GET /v1/lectures/{id}/jobs — every job of the lecture, newest first, full jobView. */
-export async function listLectureJobs(lid: string) {
-  const rows = await db.select().from(schema.jobs).where(eq(schema.jobs.lectureId, lid)).orderBy(desc(schema.jobs.updatedAt));
-  return j({ lecture_id: lid, jobs: rows.map(jobView) });
-}
-
-/** POST /v1/lectures/{id}/jobs/cancel-all — cancel every non-terminal job. */
-export async function cancelLectureJobs(lid: string) {
-  const rows = await db.select().from(schema.jobs).where(eq(schema.jobs.lectureId, lid));
-  const cancelled: string[] = [];
-  for (const row of rows) {
-    if (row.stage === "done" || row.stage === "failed") continue;
-    const r = await cancelJob(row.id);
-    if (r.ok) cancelled.push(row.id);
-  }
-  const jobs = await db.select().from(schema.jobs).where(eq(schema.jobs.lectureId, lid)).orderBy(desc(schema.jobs.updatedAt));
-  return j({ lecture_id: lid, cancelled, jobs: jobs.map(jobView) }, 202);
-}
-
-/** POST /v1/lectures/{id}/jobs/advance-all — advance up to ADVANCE_ALL_MAX non-terminal jobs in parallel. */
-export async function advanceLectureJobs(lid: string) {
-  const max = Math.max(1, Number(process.env.ADVANCE_ALL_MAX || 4));
-  const rows = (await db.select().from(schema.jobs).where(eq(schema.jobs.lectureId, lid)).orderBy(desc(schema.jobs.updatedAt)))
-    .filter((r) => r.stage !== "done" && r.stage !== "failed");
-  const skipped: { job_id: string; reason: "busy" | "hold" | "pdf_limit" }[] = [];
-  const picked: string[] = [];
-  let pdfTaken = false;
-  for (const row of rows) {
-    const view = jobView(row);
-    if (view.busy) { skipped.push({ job_id: row.id, reason: "busy" }); continue; }
-    if (view.hold_until) { skipped.push({ job_id: row.id, reason: "hold" }); continue; }
-    if (row.stage === "pdf") {
-      if (pdfTaken) { skipped.push({ job_id: row.id, reason: "pdf_limit" }); continue; }
-      pdfTaken = true;
-    }
-    if (picked.length >= max) break;
-    picked.push(row.id);
-  }
-  await Promise.allSettled(picked.map((id) => advanceJob(id)));
-  const jobs = await db.select().from(schema.jobs).where(eq(schema.jobs.lectureId, lid)).orderBy(desc(schema.jobs.updatedAt));
-  return j({ lecture_id: lid, advanced: picked, skipped, jobs: jobs.map(jobView) });
+    .innerJoin(schema.courses, eq(schema.courses.id, schema.lectures.courseId)).where(ownedBy(dev))
+    .orderBy(desc(schema.jobs.updatedAt)).limit(20);
+  return j(rows.map((r) => ({ ...r, state: r.stage === "done" || r.stage === "failed" || r.stage === "queued" ? r.stage : "running",
+    updated_at: new Date(r.updated_at).toISOString() })));
 }
 
 /** GET /v1/lectures/{id}/transcript — repaired (else raw ASR) transcript from the newest job that has one. */
@@ -600,29 +506,12 @@ export async function summaryFile(lid: string, kind: "pdf" | "html" | "json", de
   const job = await latestDone(lid, density); if (!job) return j({ error: density ? `no finished ${density} summary` : "no finished job" }, 404);
   const a = JSON.parse(job.artifacts) as Artifacts;
   if (kind === "json") return j({ summary: a.summary, repairs: a.repair, transcript: a.repaired ?? a.asr, figures: a.figures ?? null, figures_note: a.figuresNote ?? null });
-  if (kind === "html") {
-    // Prefer stored HTML; otherwise regenerate from summary (PDF-only jobs no longer keep an HTML blob).
-    if (a.html && !a.html.endsWith(".pdf")) {
-      const { data } = await readFileUrl(a.html);
-      return new Response(new Uint8Array(data), { headers: { "content-type": "text/html; charset=utf-8" } });
-    }
-    if (!a.summary) return notFound();
-    const { renderStudyHtml } = await import("../pipeline/render");
-    const lecture = await db.query.lectures.findFirst({ where: eq(schema.lectures.id, lid) });
-    const course = lecture ? await db.query.courses.findFirst({ where: eq(schema.courses.id, lecture.courseId) }) : null;
-    const html = renderStudyHtml(a.summary, [], {
-      course: course?.name, lecture: lecture?.title,
-      date: lecture?.recordedAt ?? (lecture ? new Date(lecture.createdAt).toISOString().slice(0, 10) : undefined),
-      level: jobDensity(a),
-    });
-    return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
-  }
-  const url = a.pdf;
+  const url = kind === "pdf" ? a.pdf : a.html;
   if (!url) return notFound();
-  const isPdf = !url.endsWith(".html");
-  if (!isPdf) return j({ error: "PDF renderer unavailable on this deployment; use summary.html" }, 501);
+  const isPdf = kind === "pdf" && !url.endsWith(".html");
+  if (kind === "pdf" && !isPdf) return j({ error: "PDF renderer unavailable on this deployment; use summary.html" }, 501);
   const { data } = await readFileUrl(url);
-  return new Response(new Uint8Array(data), { headers: { "content-type": "application/pdf", "X-Study-Pairs": memoryPairsHeader(a.summary) } });
+  return new Response(new Uint8Array(data), { headers: { "content-type": isPdf ? "application/pdf" : "text/html; charset=utf-8", ...(isPdf?{"X-Study-Pairs":memoryPairsHeader(a.summary)}:{}) } });
 }
 
 /**
@@ -668,115 +557,11 @@ export async function deleteCourse(cid: string) {
   const files = await db.select().from(schema.courseFiles).where(eq(schema.courseFiles.courseId, cid));
   const urls = new Set<string>(files.map((f) => f.url));
   if (c.contextPdfUrl) urls.add(c.contextPdfUrl);
-  if (c.examPdfUrl) urls.add(c.examPdfUrl);
-  if (c.examJsonUrl) urls.add(c.examJsonUrl);
   let blobErrors = 0;
   await Promise.all([...urls].map((u) => deleteFileUrl(u).catch((e) => { blobErrors++; console.warn("blob delete failed", u, e?.message); })));
   await db.delete(schema.courseFiles).where(eq(schema.courseFiles.courseId, cid));
   await db.delete(schema.courses).where(eq(schema.courses.id, cid));
   return j({ ok: true, deleted: true, course_id: cid, lectures: ls.length, blobs: urls.size, blob_errors: blobErrors });
-}
-
-/** GET /v1/courses/{id}/exam — status + which lectures would be included. */
-export async function getExamStatus(cid: string) {
-  const { collectExamSources, examFingerprint } = await import("../exam/collect");
-  const course = await db.query.courses.findFirst({ where: eq(schema.courses.id, cid) });
-  if (!course) return notFound();
-  const sources = await collectExamSources(cid);
-  const fp = examFingerprint(sources);
-  const stale = !!course.examPdfUrl && course.examFingerprint !== fp;
-  return j({
-    course_id: cid,
-    ready: !!course.examPdfUrl && !stale,
-    stale,
-    fingerprint: fp,
-    stored_fingerprint: course.examFingerprint ?? null,
-    pdf: !!course.examPdfUrl,
-    sources: sources.map((i) => ({
-      lecture_id: i.lectureId, title: i.title, kind: i.kind, density: i.density, job_id: i.jobId,
-    })),
-    missing_detailed: sources.filter((i) => i.density !== "detailed").length,
-  });
-}
-
-/** POST /v1/courses/{id}/exam { exclude_lecture_ids?: string[], force?: boolean } — build/refresh exam PDF. */
-export async function buildExam(req: Request, cid: string) {
-  const course = await db.query.courses.findFirst({ where: eq(schema.courses.id, cid) });
-  if (!course) return notFound();
-  const body = await req.json().catch(() => ({})) as { exclude_lecture_ids?: unknown; force?: boolean };
-  const exclude = Array.isArray(body.exclude_lecture_ids) ? body.exclude_lecture_ids.map(String) : [];
-  const { collectExamInputs, examFingerprint } = await import("../exam/collect");
-  const inputs = await collectExamInputs(cid, exclude);
-  if (!inputs.length) return j({ error: "no_summaries", message: "No finished prose summaries in this course" }, 409);
-  const fp = examFingerprint(inputs);
-  if (!body.force && course.examPdfUrl && course.examFingerprint === fp) {
-    return j({ ok: true, reused: true, fingerprint: fp, missing_detailed: inputs.filter((i) => i.density !== "detailed").length });
-  }
-  const { synthesizeExamPack } = await import("../exam/synthesize");
-  const { renderExamHtml, studyFooterTemplate } = await import("../pipeline/render");
-  const { htmlToPdf } = await import("../pdf");
-  const { saveArtifact } = await import("../storage");
-  let pack;
-  try { pack = await synthesizeExamPack(course.name, inputs); }
-  catch (e) { return j({ error: "exam_failed", message: (e as Error).message.slice(0, 300) }, 503); }
-  const html = renderExamHtml(pack, course.name);
-  const pdf = await htmlToPdf(html, { footerTemplate: studyFooterTemplate(null) });
-  let pdfUrl: string;
-  let jsonUrl: string;
-  try {
-    pdfUrl = pdf
-      ? await saveArtifact(`${cid}-exam.pdf`, pdf, "application/pdf")
-      : await saveArtifact(`${cid}-exam.html`, html, "text/html; charset=utf-8");
-    jsonUrl = await saveArtifact(`${cid}-exam.json`, JSON.stringify(pack), "application/json");
-  } catch (e) {
-    const msg = (e as Error).message || String(e);
-    const blobDown = /blob|suspended|quota|storage/i.test(msg);
-    return j({
-      error: blobDown ? "blob_unavailable" : "exam_store_failed",
-      message: blobDown
-        ? "Vercel Blob storage is unavailable (suspended/quota). Fix Blob in the Vercel dashboard, then retry."
-        : msg.slice(0, 300),
-    }, 503);
-  }
-  for (const u of [course.examPdfUrl, course.examJsonUrl]) {
-    if (u) await deleteFileUrl(u).catch(() => {});
-  }
-  await db.update(schema.courses).set({
-    examPdfUrl: pdfUrl, examJsonUrl: jsonUrl, examFingerprint: fp,
-  }).where(eq(schema.courses.id, cid));
-  return j({
-    ok: true, reused: false, fingerprint: fp, pdf: !!pdf,
-    missing_detailed: inputs.filter((i) => i.density !== "detailed").length,
-    sources: pack.sources.length,
-  }, 201);
-}
-
-/** GET /v1/courses/{id}/exam.pdf */
-export async function examPdf(cid: string) {
-  const course = await db.query.courses.findFirst({ where: eq(schema.courses.id, cid) });
-  if (!course?.examPdfUrl) return j({ error: "no_exam_pdf" }, 404);
-  const { data } = await readFileUrl(course.examPdfUrl);
-  const isPdf = course.examPdfUrl.endsWith(".pdf") || !course.examPdfUrl.endsWith(".html");
-  if (!isPdf) return new Response(new Uint8Array(data), { headers: { "content-type": "text/html; charset=utf-8" } });
-  let pairs = "";
-  if (course.examJsonUrl) {
-    try {
-      const { data: raw } = await readFileUrl(course.examJsonUrl);
-      const pack = JSON.parse(raw.toString("utf8"));
-      pairs = memoryPairsHeader({ glossary: pack.glossary, memory_pairs: pack.memory_pairs });
-    } catch { /* optional */ }
-  }
-  return new Response(new Uint8Array(data), {
-    headers: { "content-type": "application/pdf", ...(pairs ? { "X-Study-Pairs": pairs } : {}) },
-  });
-}
-
-/** GET /v1/courses/{id}/exam.json */
-export async function examJson(cid: string) {
-  const course = await db.query.courses.findFirst({ where: eq(schema.courses.id, cid) });
-  if (!course?.examJsonUrl) return j({ error: "no_exam_json" }, 404);
-  const { data } = await readFileUrl(course.examJsonUrl);
-  return new Response(new Uint8Array(data), { headers: { "content-type": "application/json; charset=utf-8" } });
 }
 
 export { ensureDb };

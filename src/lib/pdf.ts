@@ -26,7 +26,7 @@ function embeddedFontCss(): string {
   return fontCss;
 }
 
-export async function launchBrowser() {
+async function launch() {
   const puppeteer = (await import("puppeteer-core")).default;
   if (serverless()) {
     const chromium = (await import("@sparticuz/chromium")).default;
@@ -35,23 +35,6 @@ export async function launchBrowser() {
   const exe = candidates().find((p) => existsSync(p));
   if (!exe) return null;
   return puppeteer.launch({ executablePath: exe, headless: true, args: ["--no-sandbox", "--disable-gpu"] });
-}
-const launch = launchBrowser;
-
-/** Rasterize a fixed-size HTML document to JPEG (used for PPTX slide composites on Vercel). */
-export async function htmlToJpeg(html: string, opts: { width: number; height: number; quality?: number }): Promise<Buffer | null> {
-  if (process.env.PDF_RENDERER === "html") return null;
-  const browser = await launch().catch((e) => { console.error("jpeg: browser launch failed", e); return null; });
-  if (!browser) return null;
-  try {
-    const page = await browser.newPage();
-    await page.setViewport({ width: opts.width, height: opts.height, deviceScaleFactor: 1 });
-    await page.setContent(html, { waitUntil: "load" });
-    const buf = await page.screenshot({ type: "jpeg", quality: opts.quality ?? 82, omitBackground: false });
-    return Buffer.from(buf);
-  } finally {
-    await browser.close();
-  }
 }
 
 export async function htmlToPdf(html: string, opts: { footerTemplate?: string } = {}): Promise<Buffer | null> {

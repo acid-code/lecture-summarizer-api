@@ -158,24 +158,22 @@ export const MATH_RULES = `MATH (rendered with KaTeX — undelimited TeX prints 
 - Escape backslashes correctly for JSON (\\\\frac in the JSON string).`;
 
 /**
- * Choose topics vs questions layout from content.
- * DEFAULT is topics. Title words (תרגול / recitation / lecture) never decide alone.
+ * Choose topics vs questions layout from content (title like תרגול is only a weak prior).
+ * Ambiguous → topics.
  */
-export const STRUCTURE_MODE = `STRUCTURE MODE (set "structure_mode" on the root JSON) — DEFAULT "topics":
-- Use "topics" for almost everything: lectures, theory tutorials, concept walkthroughs, even a תרגול that teaches material
-  continuously. Topic headings name the subject (e.g. "VC dimension", "הגדרת shattering") — NEVER "שאלה N: …".
-- Use "questions" ONLY when the session is clearly a worksheet/drill: the teacher walks through MULTIPLE numbered problems
-  in order (שאלה 1 → שאלה 2 → … / Exercise 1 → 2, or תרגיל N), each with its own solve. A single worked example inside a
-  theory lecture is NOT enough. If unsure or mixed, choose "topics".
-- Title/filename containing תרגול/Tutorial/recitation/lecture is IGNORED for this choice — content decides.
+export const STRUCTURE_MODE = `STRUCTURE MODE (set "structure_mode" on the root JSON):
+- Prefer "questions" when the session is a drill/quiz/problem walkthrough: enumerated שאלות / Q / Exercise / תרגיל N,
+  worksheet order, short problem→solve→next cycles, TA reading a problem sheet aloud. Title words like תרגול/Tutorial/recitation
+  are a WEAK prior only — a theory tutorial stays "topics"; a lecture that is clearly quiz-oriented may be "questions".
+- Prefer "topics" for continuous explanation / theory. If ambiguous, use "topics".
 When structure_mode is "questions":
-- One section per numbered problem (heading MUST be "שאלה N: …" or "תרגיל N: …" / "Exercise N: …"). Set "kind":"question".
-- Section "citation" MUST include [slide N] or [slides N-M] when identifiable, plus [t=…] for the spoken solve.
+- One section per question (heading "שאלה N: …" short stem, not the full problem text). Set each section's "kind":"question".
+- Section "citation" MUST include [slide N] or [slides N-M] when the matching PDF/slide page(s) are identifiable, plus [t=…] for the spoken solve.
 - "bullets": what was asked + how it was solved (length follows density).
-- "important_notes": short Hebrew lines for THIS question's solving tips/traps/exam hints (compact: 1-3; else 1-6).
+- "important_notes": array of short Hebrew lines for THIS question's solving tips, traps, exam hints the teacher said.
+  ALWAYS include when spoken — including density "standard" (compact: 1-3 lines; detailed: more detail). Same MATH delimiters as bullets.
   Do not bury question-specific tips only in "דגשים חשובים של המרצה".
-When structure_mode is "topics": omit "kind" and "important_notes"; do NOT invent שאלה/Exercise numbered headings;
-  usual spoken-topic sections with normal bullets.`;
+When structure_mode is "topics": omit "kind"/"important_notes" (or leave important_notes empty); usual spoken-topic sections.`;
 
 /** Transcript is "thin" when it is empty/very short, or tiny compared to the slide text. */
 export function isTranscriptThin(t: Transcript | undefined, slidesText?: string | null): boolean {
@@ -256,13 +254,8 @@ export function depthTargets(t: Transcript, density: Density = "standard") {
     return { minutes: Math.round(minutes), sections, bulletsLo: long ? 5 : 4, bulletsHi: long ? 10 : 8, density, thin: false as const, chars, spanSec: Math.round(spanSec) };
   }
   if (density === "compact") {
-    // Short review sheet: far fewer sections than standard, 1-2 ultra-short bullets each.
-    const sections = Math.min(5, Math.max(1, Math.round(minutes / 20)));
-    return { minutes: Math.round(minutes), sections, bulletsLo: 1, bulletsHi: 2, density, thin: false as const, chars, spanSec: Math.round(spanSec) };
-  }
-  if (density === "slides") {
-    // Page-driven; section count is not minute-scaled here (summarizeSlidesDensity owns the cap).
-    return { minutes: Math.round(minutes), sections: 1, bulletsLo: 2, bulletsHi: 4, density, thin: false as const, chars, spanSec: Math.round(spanSec) };
+    const sections = Math.min(14, Math.max(1, Math.round(minutes / 10)));
+    return { minutes: Math.round(minutes), sections, bulletsLo: 3, bulletsHi: 6, density, thin: false as const, chars, spanSec: Math.round(spanSec) };
   }
   const sections = Math.min(22, Math.max(1, Math.round(minutes / 6)));
   return { minutes: Math.round(minutes), sections, bulletsLo: 4, bulletsHi: 8, density, thin: false as const, chars, spanSec: Math.round(spanSec) };
@@ -297,32 +290,22 @@ export function depthBlock(t: Transcript, density: Density = "standard") {
 - Still no near-verbatim retelling and no filler: admin/anecdotes at most briefly. Length comes from content, not wordiness.
 - If (and only if) the transcript were short/thin, you would stay short — never invent to look "detailed".
 ${emphasisRules(d)}`;
-  if (density === "compact") return `DEPTH & COVERAGE (COMPACT level — SHORT cheat-sheet, MUST feel lighter and shorter than standard):
-${COMPRESSION}
-- HARD CAP: at most ${d.sections} spoken sections (merge aggressively), each with ${d.bulletsLo}-${d.bulletsHi} ONE-LINE bullets (≤18 Hebrew words).
-  A ~1-hour lecture → about 2-3 short sections, ~1-2 PDF pages. If unsure, CUT — never pad.
-- Only the absolute exam-critical definitions / rules / formulas. Collapse examples to setup→result in one line.
-- Do NOT add "סיכום מהמצגת" or "דגשים חשובים של המרצה" as separate sections. Optional: at most two "חשוב:" bullets inside spoken sections.
-- NO multi-sentence bullets, NO paragraph notes, NO slide-only material that was not spoken.
-- Glossary: 2-6 terms only. memory_pairs: 0-6. big_picture: null.
-- overview: 1 short Hebrew sentence naming the main subjects.`;
-  return `DEPTH & COVERAGE (STANDARD level):
+  return `DEPTH & COVERAGE (${density.toUpperCase()} level):
 ${COMPRESSION}
 - Still cover the FULL timeline (beginning, middle AND end) — every distinct subject the lecturer taught gets covered; never drop mid/late topics.
   [t=…] citations spread across the whole ~${d.minutes} minutes. Merge closely related small topics into one section.
 - Target roughly ${d.sections} spoken-topic sections (use judgment: fewer if the lecture is repetitive, more if it changes subject often),
-  each ${d.bulletsLo}-${d.bulletsHi} bullets. Each bullet is 1-2 dense sentences — a note a student would write, not prose.
-- Standard = real study notes: what you need to understand and solve problems, without the retelling. Aim for something like 6-9 PDF pages per hour of exercise/lecture (judgment, not a cap).
-${emphasisRules(d)}`;
+  each ${d.bulletsLo}-${d.bulletsHi} bullets. Each bullet ${density === "compact" ? "is one short line (a fact, rule or step)" : "is 1-2 dense sentences"} — a note a student would write, not prose.
+${density === "compact" ? "- Compact = a review sheet for the night before the exam: only the essentials, one-line definitions, key procedures and exam hints.\n" : "- Standard = real study notes: what you need to understand and solve problems, without the retelling. Aim for something like 6-9 PDF pages per hour of exercise/lecture (judgment, not a cap).\n"}${emphasisRules(d)}`;
 }
 
 function emphasisRules(d: ReturnType<typeof depthTargets>) {
-  const n = d.density === "compact" ? "2-5" : d.density === "detailed" ? "5-15" : "4-10";
+  const n = d.density === "compact" ? "3-8" : d.density === "detailed" ? "5-15" : "4-10";
   return `- PROFESSOR'S KEY NOTES — keep what the lecturer explicitly stressed ("חשוב", "שימו לב", "למבחן", "תזכרו", "טעות נפוצה", "important",
   repetition, explicit definitions, warnings, exam/homework hints). Start such bullets with "חשוב: ". Also add a section titled
   "דגשים חשובים של המרצה" (right after the spoken sections, before "סיכום מהמצגת") with ${n} of the most important such notes, each cited [t=…]; exam/homework hints first.
-- Definitions said aloud go in the glossary (Hebrew + English term; aim ${d.density === "compact" ? "3-10" : "8-25"} entries).
-- "overview": ${d.density === "compact" ? "1-2" : "3-6"} sentences listing the main subjects in order.
+- Definitions said aloud go in the glossary (Hebrew + English term; aim ${d.density === "compact" ? "5-15" : "8-25"} entries).
+- "overview": ${d.density === "compact" ? "2-4" : "3-6"} sentences listing the main subjects in order.
 - No filler, no repeating a point in two sections, no generic textbook material the lecturer did not say.`;
 }
 
@@ -340,14 +323,12 @@ SOURCE PRIORITY (strict) — the VOICE/transcript leads, slides only support it:
 2. SUPPORTING = slides. Use them only to clarify terms/spelling, formulas, definitions, structure and diagrams for what was said.
    Do NOT reorganize the summary by slide order and do NOT give slide-only bullets equal weight: slide material that was not
    discussed goes in briefly (one short bullet, or the glossary), never as the backbone of a section.
-${density === "compact"
-    ? `2b. COMPACT: do NOT add "סיכום מהמצגת" or "דגשים חשובים של המרצה". Slides only fix spelling/formulas inside spoken bullets.`
-    : `2b. IMPORTANT SLIDE CONTENT must not be lost even though slides are secondary: harvest the slides' key definitions and key
+2b. IMPORTANT SLIDE CONTENT must not be lost even though slides are secondary: harvest the slides' key definitions and key
    points into the matching spoken sections (cite [slide N], or [t=…, slide N] when also spoken), and ALWAYS add one final
    section titled "סיכום מהמצגת" (from the slides) built from the deck's CLOSING / summary / conclusion / take-home slides
    (usually the last few slides, shown in full below under "FINAL SLIDES") — include their points even if they were only
    lightly spoken or not spoken at all, each cited [slide N] (+ [t=…] when spoken). Keep it focused (about 3-10 bullets);
-   do not turn the whole slide outline into sections.`}
+   do not turn the whole slide outline into sections.
 3. BACKGROUND = course-pack excerpts — terminology/definitions only; never add topics not covered in this lecture.
 CITATIONS (mixed, required):
 - Spoken content MUST be cited with lecture time from the transcript, e.g. [t=4:35] (or a range [t=4:35-6:10]).
@@ -363,51 +344,22 @@ ${fmtTimed(t) || "(empty)"}
 Term repairs already applied: ${JSON.stringify(repairs)}
 SUPPORTING CONTEXT — slides (glossary/structure/diagrams only; not the outline of the summary):
 Each === filename === block is a separate attached deck. Use ALL relevant decks. Retain original slide numbers; when citing slides from multiple decks include the filename. Approximate focus ranges are uncertain; do not invent coverage or ignore the transcript.
-${slidesForSummary(ctx.slidesText, density === "compact" ? 2500 : undefined, density === "compact" ? 800 : undefined)}
-Course-pack excerpts: ${ctx.courseExcerpts?.(text, density === "compact" ? 2000 : 6000) || "(none)"}
-Also return memory_pairs: ${depth.thin || density === "compact" ? "0-6" : "8-16"} unique matching-game pairs when the material supports them (fewer rather than invented facts; [] is fine when thin). Each term is concise (up to 40 characters), and each definition is a short, Hebrew-friendly single clause (up to 100 characters), grounded ONLY in this lecture. Do not add model calls for these pairs.
+${slidesForSummary(ctx.slidesText)}
+Course-pack excerpts: ${ctx.courseExcerpts?.(text, 6000) || "(none)"}
+Also return memory_pairs: ${depth.thin ? "0-4" : "8-16"} unique matching-game pairs when the material supports them (fewer rather than invented facts; [] is fine when thin). Each term is concise (up to 40 characters), and each definition is a short, Hebrew-friendly single clause (up to 100 characters), grounded ONLY in this lecture. Do not add model calls for these pairs.
 ${STRUCTURE_MODE}
 Return JSON {"title","overview","transcript_thin":boolean,"structure_mode":"topics"|"questions","sections":[{"heading","kind":"question"?,"bullets":[],"important_notes":[]?,"citation"}],"glossary":[{"term","explanation"}],"memory_pairs":[{"term","definition"}],"big_picture":{"intent","themes":[{"title","explanation"}],"missed_terms":[{"term","explanation"}]}}.
 "title" = the lecture topic only; never add a lecture number ("הרצאה 1", "Lecture 3") unless that exact number is in the lecture title given above.
-${density === "compact" ? `Set "big_picture": null.` : BIG_PICTURE}
+${BIG_PICTURE}
 Put cites inline at the end of bullets and in each section's "citation".
 ${MATH_RULES}`;
 }
 
-/** Numbered drill heading (שאלה 3 / Exercise 2 / …). kind alone is ignored — models over-tag lectures. */
-export function looksLikeQuestionHeading(heading: unknown): boolean {
-  const h = typeof heading === "string" ? heading : heading == null ? "" : String(heading);
-  return /^(שאלה|תרגיל|Question|Exercise|Problem)\s*\d/i.test(h.trim());
-}
-
-/** True only when the heading is a real numbered drill item. */
+/** True for drill/question sections (explicit kind or Hebrew/English question heading). */
 export function isQuestionSection(s: { kind?: string; heading?: unknown }): boolean {
-  return looksLikeQuestionHeading(s.heading);
-}
-
-const META_SECTION_RE = /דגשים חשובים|סיכום מהמצגת|הערות לפתרון/;
-
-/**
- * Demote false "questions" layouts. Models often mark every section kind=question on normal lectures;
- * keep questions mode only when enough sections have real numbered drill headings.
- */
-export function normalizeStructureMode<T extends {
-  structure_mode?: "topics" | "questions";
-  sections?: { kind?: "question" | "topic"; heading?: string; important_notes?: string[]; bullets?: string[] }[];
-}>(s: T): T {
-  const sections = s.sections ?? [];
-  const spoken = sections.filter((x) => !META_SECTION_RE.test(x.heading ?? ""));
-  const qCount = spoken.filter((x) => looksLikeQuestionHeading(x.heading)).length;
-  const keepQuestions = qCount >= 2 || (qCount === 1 && spoken.length === 1);
-  const next = sections.map((sec) => {
-    if (META_SECTION_RE.test(sec.heading ?? "")) return sec;
-    if (keepQuestions && looksLikeQuestionHeading(sec.heading)) {
-      return { ...sec, kind: "question" as const };
-    }
-    const { important_notes: _drop, ...rest } = sec;
-    return { ...rest, kind: undefined };
-  });
-  return { ...s, structure_mode: keepQuestions ? "questions" : "topics", sections: next };
+  if (s.kind === "question") return true;
+  const h = typeof s.heading === "string" ? s.heading : s.heading == null ? "" : String(s.heading);
+  return /^(שאלה|תרגיל|Question|Exercise|Problem)\s*\d/i.test(h.trim());
 }
 
 /** Apply high-confidence repairs to the transcript (edits stay stored for review). */
@@ -431,28 +383,21 @@ export function spokenSectionCount(s: { sections?: { heading?: string }[] }): nu
 export function summaryTooShort(s: { sections?: { heading?: string; bullets?: string[] }[] }, t: Transcript, density: Density = "standard"): boolean {
   const d = depthTargets(t, density);
   if (d.thin || d.minutes < 20) return false;
-  // Compact / slides are allowed to stay short — do not expand-retry.
-  if (density === "compact" || density === "slides") return false;
   const n = spokenSectionCount(s);
   const bullets = (s.sections ?? []).reduce((a, x) => a + (x.bullets?.length ?? 0), 0);
   const f = density === "detailed" ? 0.6 : 0.45;
   return n < Math.ceil(d.sections * f) || bullets < d.sections * d.bulletsLo * (density === "detailed" ? 0.5 : 0.4);
 }
-/** Summary padded far beyond thin evidence — or compact that ignored its hard length cap. */
+/** Summary padded far beyond thin evidence — typically a "detailed" hallucination. */
 export function summaryOvergrown(
   s: { sections?: { heading?: string; bullets?: string[] }[]; glossary?: unknown[]; memory_pairs?: unknown[]; big_picture?: unknown },
   t: Transcript,
   density: Density = "standard",
 ): boolean {
   const d = depthTargets(t, density);
+  if (!d.thin) return false;
   const n = spokenSectionCount(s);
   const bullets = (s.sections ?? []).reduce((a, x) => a + (x.bullets?.length ?? 0), 0);
-  if (density === "compact" && !d.thin) {
-    // Models often ignore the compact hard cap and emit a dense standard-length pack.
-    const hasMeta = (s.sections ?? []).some((x) => /דגשים חשובים|סיכום מהמצגת/.test(x.heading ?? ""));
-    return n > d.sections + 1 || bullets > d.sections * d.bulletsHi + 2 || (s.glossary?.length ?? 0) > 8 || hasMeta || !!s.big_picture;
-  }
-  if (!d.thin) return false;
   return n > d.sections + 1 || bullets > d.sections * d.bulletsHi + 2 || (s.glossary?.length ?? 0) > 6 || (s.memory_pairs?.length ?? 0) > 6 || !!s.big_picture;
 }
 export function expandNote(prevSections: number, t: Transcript, density: Density = "standard"): string {
@@ -464,11 +409,6 @@ export function expandNote(prevSections: number, t: Transcript, density: Density
 }
 export function shrinkNote(t: Transcript, density: Density = "standard"): string {
   const d = depthTargets(t, density);
-  if (density === "compact") {
-    return `\n\nIMPORTANT — YOUR PREVIOUS ANSWER WAS TOO PACKED FOR COMPACT. Rewrite as a SHORT cheat-sheet: ` +
-      `at most ${d.sections} spoken sections, ${d.bulletsLo}-${d.bulletsHi} one-line bullets each (≤18 words), ` +
-      `NO "דגשים חשובים של המרצה", NO "סיכום מהמצגת", glossary 2-6, memory_pairs 0-6, big_picture null. Cut ruthlessly.`;
-  }
   return `\n\nIMPORTANT — YOUR PREVIOUS ANSWER OVERGREW A THIN TRANSCRIPT (~${d.spanSec}s, ~${d.chars} chars). ` +
     `Rewrite MUCH SHORTER and stay faithful: at most ${d.sections} section(s), ${d.bulletsLo}-${d.bulletsHi} bullets each, ` +
     `glossary 0-5, memory_pairs 0-4, big_picture null. Delete invented topics. Sparse is correct.`;
