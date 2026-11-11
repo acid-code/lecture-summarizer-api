@@ -13,6 +13,10 @@ export interface SummarySection {
   kind?: "question" | "topic";
   /** Per-question solving tips / traps / exam hints (even at standard density). Same KaTeX rules as bullets. */
   important_notes?: string[];
+  /** 1-based slide/page number when density is "slides". */
+  slide?: number;
+  /** Source deck file name when density is "slides" (disambiguates page 1 across multiple decks). */
+  deck?: string;
 }
 export interface LectureSummary {
   title: string;
@@ -54,12 +58,16 @@ export interface LectureContext {
   slidesOnly?: boolean;
   /** Retrieved excerpts from the course-context pack (never the whole PDF). */
   courseExcerpts?: (query: string, budget?: number) => string;
-  /** Summary density: compact (short review sheet), standard (default study notes), detailed (near-exhaustive). */
+  /** Summary density: compact / standard / detailed / slides (per-slide commentary). */
   density?: Density;
+  /** Pre-resolved slide pages for density=slides (from PDF/PPTX page count + OCR text). */
+  slidePages?: { page: number; text: string; deck?: string }[];
 }
-export type Density = "compact" | "standard" | "detailed";
-export const DENSITIES: Density[] = ["compact", "standard", "detailed"];
+export type Density = "compact" | "standard" | "detailed" | "slides";
+export const DENSITIES: Density[] = ["compact", "standard", "detailed", "slides"];
 export const parseDensity = (v: unknown): Density | undefined => DENSITIES.includes(v as Density) ? v as Density : undefined;
+/** Hard stop for slides-density PDFs (first N in-range pages). */
+export const SLIDES_PAGE_CAP = 70;
 
 /** Behind an interface so ASR/LLM can move to ivrit-ai Whisper etc. via config later. */
 export interface AiProvider {

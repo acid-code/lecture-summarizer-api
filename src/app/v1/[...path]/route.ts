@@ -28,7 +28,11 @@ async function route(req: Request, { params }: Ctx) {
     const dry = new URL(req.url).searchParams.get("dry_run") === "1";
     if (p[1] === "blob-gc") {
       const { runBlobGc } = await import("@/lib/blob-gc");
-      return Response.json(await runBlobGc({ dryRun: dry, orphans: true }));
+      const gc = await runBlobGc({ dryRun: dry, orphans: true });
+      // After reclaiming quota, immediately try to unstick soft-held PDF jobs (Hobby: one daily cron pair).
+      const { runJobNudge } = await import("@/lib/job-nudge");
+      const nudge = await runJobNudge({ dryRun: dry });
+      return Response.json({ ...gc, nudge });
     }
     const { runJobNudge } = await import("@/lib/job-nudge");
     return Response.json(await runJobNudge({ dryRun: dry }));
@@ -63,6 +67,12 @@ async function route(req: Request, { params }: Ctx) {
       if (m === "GET" && d) return h.getCourseFile(b, d);
       if (m === "DELETE") return h.deleteCourseFile(b, d);
     }
+    if (a === "courses" && b && c === "exam" && !d) {
+      if (m === "GET") return h.getExamStatus(b);
+      if (m === "POST") return h.buildExam(req, b);
+    }
+    if (a === "courses" && b && c === "exam.pdf" && m === "GET") return h.examPdf(b);
+    if (a === "courses" && b && c === "exam.json" && m === "GET") return h.examJson(b);
     if (a === "uploads" && !b && m === "POST") return h.createUpload(req);
     if (a === "lectures" && !b && m === "POST") return h.createLecture(req, dev);
     if (a === "lectures" && b) {
@@ -89,17 +99,21 @@ async function route(req: Request, { params }: Ctx) {
       if (m === "GET" && c === "files" && d) return h.getFile(b, d);
       if (m === "GET" && c === "transcript" && !d) return h.getTranscript(b);
       if (m === "GET" && c === "summaries") return h.listSummaries(b);
+      if (c === "jobs" && !d && m === "GET") return h.listLectureJobs(b);
+      if (c === "jobs" && d === "cancel-all" && m === "POST") return h.cancelLectureJobs(b);
+      if (c === "jobs" && d === "advance-all" && m === "POST") return h.advanceLectureJobs(b);
       if (m === "GET" && c === "summary.pdf") return h.summaryFile(b, "pdf", parseDensity(new URL(req.url).searchParams.get("density")));
       if (m === "GET" && c === "summary.html") return h.summaryFile(b, "html", parseDensity(new URL(req.url).searchParams.get("density")));
       if (m === "GET" && c === "summary.json") return h.summaryFile(b, "json", parseDensity(new URL(req.url).searchParams.get("density")));
     }
-    if (a === "jobs" && !b && m === "GET") return h.listJobs(dev);
+    if (a === "jobs" && !b && m === "GET") return h.listJobs(dev, new URL(req.url));
     if (a === "jobs" && b) {
       if (!c && m === "DELETE") return h.deleteJob(b);
       if (!c && m === "GET") return h.getJob(b, process.env.AUTO_ADVANCE_ON_POLL !== "false" && new URL(req.url).searchParams.get("advance") !== "0");
       if (c === "advance" && m === "POST") return h.postAdvance(b);
       if (c === "retry" && m === "POST") return h.postRetry(req, b);
       if (c === "cancel" && m === "POST") return h.postCancel(b);
+      if (c === "abort" && m === "POST") return h.postCancel(b);
       if (c === "reprocess" && m === "POST") return h.postReprocess(req, b);
       if (c === "rerepair" && m === "POST") return h.postRerepair(req, b);
       if (c === "resummarize" && m === "POST") return h.postResummarize(req, b);

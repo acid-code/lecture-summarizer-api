@@ -1,6 +1,6 @@
 import katex from "katex";
 import type { LectureSummary } from "../providers/types";
-import { isQuestionSection } from "../providers/prompts";
+import { isQuestionSection, normalizeStructureMode } from "../providers/prompts";
 import type { Figure } from "../figures";
 
 /** Coerce any model-emitted value (number/object/array/null) to text so `.replace` never crashes. */
@@ -188,11 +188,30 @@ ${terms.length ? `<h3>${h3}</h3><dl>${terms.map((g) => `<dt>${bidi(g.term)}</dt>
 export function renderFigure(f: Figure): string {
   const he = /[\u0590-\u05FF]/.test(str(f.caption));
   const label = `${he ? "שקף" : "slide"} ${f.page}${f.deck ? ` · ${f.deck}` : ""}`;
-  return `<figure class="fig"><img src="${f.src}" alt="${esc(label)}"><figcaption dir="${he ? "rtl" : "ltr"}">${f.caption ? bidi(f.caption) + " " : ""}<bdi class="cite-inline" dir="ltr">[${esc(label)}]</bdi></figcaption></figure>`;
+  // fig-frame is a real sized box so Chromium print letterboxes via object-fit (border-on-img alone clips).
+  return `<figure class="fig"><div class="fig-frame"><img src="${f.src}" alt="${esc(label)}"></div><figcaption dir="${he ? "rtl" : "ltr"}">${f.caption ? bidi(f.caption) + " " : ""}<bdi class="cite-inline" dir="ltr">[${esc(label)}]</bdi></figcaption></figure>`;
 }
 
 /** Header metadata from the job record (LectureSummary has none). All optional; missing chips are omitted. */
-export interface StudyMeta { course?: string | null; lecture?: string | null; date?: string | null; level?: string | null }
+export interface StudyMeta { course?: string | null; lecture?: string | null; date?: string | null; level?: string | null; /** Spreadsheet-like slide+commentary rows */ slidesLayout?: boolean }
+
+/** True when a slides-density card would show only a number (no image, no real commentary). */
+export function isBlankSlideCard(x: { heading?: unknown; bullets?: unknown; slide?: unknown } | null | undefined, hasFigure: boolean): boolean {
+  if (hasFigure) return false;
+  const heading = str(x?.heading).trim();
+  const slideNo = x?.slide != null ? Number(x.slide) : NaN;
+  const headingPlaceholder = !heading
+    || /^שקף\s*\d+$/i.test(heading)
+    || /^slide\s*\d+$/i.test(heading)
+    || (!Number.isNaN(slideNo) && heading === String(slideNo));
+  const bullets = arr(x?.bullets).map(str).map((t) => t.trim()).filter(Boolean);
+  const meaningful = bullets.filter((b) =>
+    !/^\(?שקף\s*\d+\)?$/i.test(b)
+    && !/^see the slide/i.test(b)
+    && !/^ראו את השקף/i.test(b)
+  );
+  return headingPlaceholder && meaningful.length === 0;
+}
 export const SIGN_OFF = "סוכם אוטומטית מההרצאה והשקפים · בדקו מול החומר הרשמי";
 const fmtDate = (d?: string | null) => { if (!d) return ""; const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d); return m ? `${m[3]}.${m[2]}.${m[1]}` : d; };
 
@@ -223,30 +242,74 @@ dt{font-weight:700;color:#1E3A8A;font-size:9.5pt}dd{margin:2px 0 0;font-size:9.5
 .sign{margin:30px 0 10px;padding:12px 0 0;border-top:1px solid #E2E8F0;color:#64748B;font-size:9pt;text-align:center}
 bdi{unicode-bidi:isolate}.math,.katex,.katex-display{unicode-bidi:isolate;direction:ltr}bdi.math{display:inline-block}div.math{display:block;text-align:center;margin:.4em 0}.katex{font-size:1.05em}
 .big-picture[dir=rtl]{direction:rtl;text-align:right}.big-picture[dir=ltr]{direction:ltr;text-align:left}.big-picture{border-top:1px solid #E2E8F0;margin-top:2em;padding-top:.5em}.big-picture h2{margin:.6em 0 .3em}.big-picture dl{margin:0}.big-picture dd{margin:0 0 .4em}
-.fig{margin:.5em auto;text-align:center;break-inside:avoid;page-break-inside:avoid}.fig img{display:block;margin:0 auto;max-width:100%;max-height:80mm;object-fit:contain;border:1px solid #E5E7EB;border-radius:8px}.fig figcaption{font-size:.85em;color:#475569;margin-top:.3em}.fig figcaption[dir=rtl]{direction:rtl}`;
+.fig{margin:.75em auto .4em;text-align:center;break-inside:avoid;page-break-inside:avoid;max-width:100%}
+.fig-frame{position:relative;display:block;margin:0 auto;width:100%;height:72mm;max-height:80mm;background:#F8FAFC;border:1px solid #E5E7EB;border-radius:8px;overflow:hidden}
+.fig-frame img{position:absolute;inset:6px;display:block;width:calc(100% - 12px);height:calc(100% - 12px);object-fit:contain;object-position:center center;border:0;border-radius:4px;background:transparent}
+.fig figcaption{font-size:.85em;color:#475569;margin-top:.35em}.fig figcaption[dir=rtl]{direction:rtl}
+/* Slides density: ~2 cards/page — image LEFT + notes RIGHT; notes dir/bullets follow HE (rtl) vs EN (ltr). */
+body:has(main.slides) header{padding:16px 28px 10px}body:has(main.slides) h1{font-size:16pt;margin:0 0 8px}
+main.slides{padding:0 28px}.slides .ov{margin:2px 0 8px;font-size:9.5pt}
+.slide-card{border:1px solid #E5E7EB;border-radius:10px;padding:6px 8px;margin:0 0 6px;break-inside:avoid;page-break-inside:avoid;height:112mm;max-height:112mm;overflow:hidden;display:flex;flex-direction:column}
+.slide-card .sh{margin-bottom:5px;gap:6px;flex:0 0 auto}.slide-card .sh h2{font-size:10.5pt;font-weight:700}
+.slide-card .slide-badge{font-size:7.5pt;font-weight:600;color:#1E3A8A;background:#EEF2FF;border-radius:999px;padding:1px 8px;direction:ltr;unicode-bidi:isolate}
+.slide-card .slide-body{display:flex;flex-direction:row;direction:ltr;align-items:stretch;gap:10px;flex:1 1 auto;min-height:0}
+.slide-card .fig{flex:1.25 1 55%;margin:0;min-width:0;min-height:0;max-width:100%;position:relative;background:#F8FAFC;border:1px solid #E5E7EB;border-radius:8px;overflow:hidden}
+.slide-card .fig img{position:absolute;inset:4px;display:block;width:calc(100% - 8px);height:calc(100% - 8px);max-width:calc(100% - 8px);max-height:calc(100% - 8px);object-fit:contain;object-position:center center;border:0;background:transparent;border-radius:4px}
+.slide-card .fig.missing{display:flex;align-items:center;justify-content:center;position:relative;inset:auto;width:100%;height:100%;min-height:40mm;background:#F8FAFC;border:1px dashed #CBD5E1;border-radius:8px;color:#64748B;font-size:9pt}
+.slide-card .notes{flex:1 1 40%;margin:0;min-width:0;min-height:0;overflow:hidden;align-self:stretch;padding-top:2px}
+.slide-card .notes[dir=rtl]{direction:rtl;text-align:right}.slide-card .notes[dir=ltr]{direction:ltr;text-align:left}
+.slide-card .notes ul{margin:0;list-style-position:outside}
+.slide-card .notes[dir=rtl] ul{padding:0 14px 0 0}.slide-card .notes[dir=ltr] ul{padding:0 0 0 14px}
+.slide-card .notes li{margin-bottom:2px;font-size:9pt;line-height:1.35}
+.slide-card .cite-inline{margin-top:1px}`;
 
 export function renderStudyHtml(s0: LectureSummary, figures: Figure[] = [], meta: StudyMeta = {}): string {
   // Defensive: a summary stored as `[{...}]` (Gemini array wrap) rendered as an empty glossary-only page.
-  const s = (Array.isArray(s0) ? (s0 as unknown[]).find((o) => o && typeof o === "object") ?? {} : s0) as LectureSummary;
+  // Also demote false "questions" layouts left by older prompts (kind=question on normal lectures).
+  const s = normalizeStructureMode((Array.isArray(s0) ? (s0 as unknown[]).find((o) => o && typeof o === "object") ?? {} : s0) as LectureSummary);
   const ok = figures.filter((f) => /^data:image\/[a-z]+;base64,[A-Za-z0-9+/=]{4,}/.test(f.src ?? ""));
   const secs = arr<any>(s.sections);
+  const slidesLayout = !!meta.slidesLayout || secs.some((x) => typeof x?.slide === "number");
   const figs = (i: number) => ok.filter((f) => f.section === i || (i === secs.length - 1 && (f.section < 0 || f.section >= secs.length))).map(renderFigure).join("");
   const chips = [meta.course, meta.lecture, fmtDate(meta.date)].filter((x) => str(x).trim()).map((x) => `<span class="chip">${bidi(x)}</span>`).join("")
     + (str(meta.level).trim() ? `<span class="chip lvl">רמה: <b>${bidi(meta.level)}</b></span>` : "");
-  // Key points: first important_note or first bullet of the first 4 spoken sections.
-  const keys = secs.slice(0, 4).map((x) => arr(x?.important_notes)[0] ?? arr(x?.bullets)[0]).filter((b) => str(b).trim());
-  const modeChip = s.structure_mode === "questions" || secs.some((x) => isQuestionSection(x))
+  const keys = slidesLayout ? [] : secs.slice(0, 4).map((x) => arr(x?.important_notes)[0] ?? arr(x?.bullets)[0]).filter((b) => str(b).trim());
+  const modeChip = !slidesLayout && (s.structure_mode === "questions" || secs.some((x) => isQuestionSection(x)))
     ? `<span class="chip lvl">מבנה: <b>שאלות</b></span>` : "";
   const renderSec = (x: any, i: number) => {
-    const q = isQuestionSection(x);
+    const q = !slidesLayout && isQuestionSection(x);
     const notes = arr<string>(x?.important_notes).map(str).filter((t) => t.trim());
     const body = x?.style === "prose"
       ? arr(x.bullets).map((b) => `<p>${bidi(b)}</p>`).join("")
       : `<ul>${arr(x?.bullets).map((b) => `<li>${bidi(b)}</li>`).join("")}</ul>`;
-    // important_notes go through bidi() so KaTeX / \\( \\) / $$ $$ render like bullets — never esc()-only.
-    const notesHtml = notes.length
+    const notesHtml = !slidesLayout && notes.length
       ? `<div class="qnotes"><div class="kh">הערות לפתרון</div><ul>${notes.map((n) => `<li>${bidi(n)}</li>`).join("")}</ul></div>`
       : "";
+    if (slidesLayout) {
+      const f = ok.find((fig) => fig.section === i || (i === secs.length - 1 && (fig.section < 0 || fig.section >= secs.length)));
+      // Blank cards with only a slide number (no image, no real notes) are noise — drop them.
+      if (isBlankSlideCard(x, !!f)) return "";
+      const slideNo = esc(x?.slide ?? i + 1);
+      const img = f
+        ? `<figure class="fig"><img src="${f.src}" alt="${esc(`שקף ${f.page}`)}"></figure>`
+        : `<div class="fig missing">שקף ${slideNo}</div>`;
+      // Drop redundant [slide N] cites — the badge already shows the page. Keep timed cites.
+      const citeRaw = unent(x?.citation);
+      const cite = citeRaw && !/^\[slide\s*\d+[^\]]*\]$/i.test(citeRaw.trim()) ? renderCite(citeRaw) : "";
+      // Notes language drives text direction + bullet side; image stays LEFT, notes RIGHT.
+      const noteText = [x?.heading, ...arr(x?.bullets)].map(str).join(" ");
+      const heNotes = /[\u0590-\u05FF]/.test(noteText);
+      const notesDir = heNotes ? "rtl" : "ltr";
+      const badge = heNotes ? `שקף ${slideNo}` : `slide ${slideNo}`;
+      const prevRtl = rtlArrows;
+      rtlArrows = heNotes;
+      try {
+        const notesHtml = x?.style === "prose"
+          ? arr(x.bullets).map((b) => `<p>${bidi(b)}</p>`).join("")
+          : `<ul>${arr(x?.bullets).map((b) => `<li>${bidi(b)}</li>`).join("")}</ul>`;
+        return `<section class="slide-card" data-slide="${slideNo}"><div class="sh" dir="${notesDir}"><span class="num">${String(Number(x?.slide ?? i + 1)).padStart(2, "0")}</span><h2>${bidi(x?.heading)}</h2><span class="slide-badge">${badge}</span>${cite}</div><div class="slide-body">${img}<div class="notes" dir="${notesDir}" lang="${heNotes ? "he" : "en"}">${notesHtml}</div></div></section>`;
+      } finally { rtlArrows = prevRtl; }
+    }
     return `<section class="card${q ? " question" : ""}"><div class="sh"><span class="num">${String(i + 1).padStart(2, "0")}</span><h2>${bidi(x?.heading)}</h2>${q ? `<span class="badge-q">שאלה</span>` : ""}${x?.citation ? renderCite(unent(x.citation)) : ""}</div>${body}${notesHtml}${figs(i)}</section>`;
   };
   return `<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>${esc(s.title)}</title>
@@ -254,11 +317,11 @@ export function renderStudyHtml(s0: LectureSummary, figures: Figure[] = [], meta
 ${BRAND_CSS}
 </style></head><body>
 <div class="bar"></div><header><h1>${bidi(s.title)}</h1>${chips || modeChip ? `<div class="meta">${chips}${modeChip}</div>` : ""}</header>
-<main>${s.transcript_thin ? `<p class="thin">שימו לב: התמלול של ההקלטה קצר/חסר ביחס לשקפים — חלק מהסיכום מבוסס על השקפים בלבד.</p>` : ""}${arr(s.overview).map((o) => `<p class="ov">${bidi(o)}</p>`).join("")}
+<main class="${slidesLayout ? "slides" : ""}">${s.transcript_thin ? `<p class="thin">שימו לב: התמלול של ההקלטה קצר/חסר ביחס לשקפים — חלק מהסיכום מבוסס על השקפים בלבד.</p>` : ""}${arr(s.overview).map((o) => `<p class="ov">${bidi(o)}</p>`).join("")}
 ${keys.length ? `<div class="key"><div class="kh">חשוב לזכור</div><ul>${keys.map((b) => `<li>${bidi(b)}</li>`).join("")}</ul></div>` : ""}
 ${secs.map(renderSec).join("\n")}
-<div class="gt">מילון מונחים</div><dl class="gl">${mergedGlossary(s).map((g) => `<div class="term"><dt>${bidi(g?.term)}</dt><dd>${bidi(g?.explanation)}</dd></div>`).join("")}</dl>
-${renderBigPicture(s.big_picture ? { ...s.big_picture, missed_terms: [] } : s.big_picture)}
+${slidesLayout ? "" : `<div class="gt">מילון מונחים</div><dl class="gl">${mergedGlossary(s).map((g) => `<div class="term"><dt>${bidi(g?.term)}</dt><dd>${bidi(g?.explanation)}</dd></div>`).join("")}</dl>`}
+${slidesLayout ? "" : renderBigPicture(s.big_picture ? { ...s.big_picture, missed_terms: [] } : s.big_picture)}
 <div class="sign">${SIGN_OFF}</div></main>
 </body></html>`;
 }
@@ -267,4 +330,39 @@ ${renderBigPicture(s.big_picture ? { ...s.big_picture, missed_terms: [] } : s.bi
 export function studyFooterTemplate(coverageRatio?: number | null): string {
   const cov = typeof coverageRatio === "number" && isFinite(coverageRatio) ? ` · כיסוי הקלטה ${Math.round(Math.min(1, Math.max(0, coverageRatio)) * 100)}%` : "";
   return `<div dir="rtl" style="width:100%;font-family:'IBM Plex Sans Hebrew',Arial,sans-serif;font-size:7.5pt;color:#94A3B8;text-align:center;padding:0 44px">עמוד <span class="pageNumber"></span> מתוך <span class="totalPages"></span>${cov}</div>`;
+}
+
+const KIND_HE: Record<string, string> = { lecture: "הרצאה", recitation: "תרגול", unknown: "שיעור" };
+const DENSITY_HE: Record<string, string> = { detailed: "מפורט", standard: "רגיל", compact: "תמציתי" };
+
+/** Course exam pack PDF: pointers first, then per-session summary + glossary. */
+export function renderExamHtml(pack: {
+  title: string; overview: string; pointers: string[];
+  sessions: { title: string; kind: string; density: string; heading: string; bullets: string[] }[];
+  glossary: { term: string; explanation: string }[];
+}, courseName?: string | null): string {
+  const chips = [
+    courseName ? `<span class="chip">${bidi(courseName)}</span>` : "",
+    `<span class="chip lvl">מצב: <b>מבחן</b></span>`,
+    `<span class="chip">${pack.sessions.length} מפגשים</span>`,
+  ].filter(Boolean).join("");
+  const pointers = pack.pointers.filter((p) => str(p).trim());
+  const sessions = pack.sessions.map((s, i) => {
+    const body = `<ul>${arr(s.bullets).map((b) => `<li>${bidi(b)}</li>`).join("")}</ul>`;
+    const badge = `<span class="badge-q">${KIND_HE[s.kind] ?? KIND_HE.unknown} · ${DENSITY_HE[s.density] ?? s.density}</span>`;
+    return `<section class="card"><div class="sh"><span class="num">${String(i + 1).padStart(2, "0")}</span><h2>${bidi(s.heading || s.title)}</h2>${badge}</div><p class="thin">${bidi(s.title)}</p>${body}</section>`;
+  }).join("\n");
+  const gloss = pack.glossary.filter((g) => str(g.term).trim());
+  return `<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>${esc(pack.title)}</title>
+<style>
+${BRAND_CSS}
+</style></head><body>
+<div class="bar"></div><header><h1>${bidi(pack.title)}</h1>${chips ? `<div class="meta">${chips}</div>` : ""}</header>
+<main>${arr(pack.overview).map((o) => `<p class="ov">${bidi(o)}</p>`).join("")}
+${pointers.length ? `<div class="key"><div class="kh">נקודות למבחן</div><ul>${pointers.map((p) => `<li>${bidi(p)}</li>`).join("")}</ul></div>` : ""}
+<div class="gt">סיכום לפי מפגשים</div>
+${sessions}
+${gloss.length ? `<div class="gt">מילון מונחים</div><dl class="gl">${gloss.map((g) => `<div class="term"><dt>${bidi(g.term)}</dt><dd>${bidi(g.explanation)}</dd></div>`).join("")}</dl>` : ""}
+<div class="sign">${SIGN_OFF}</div></main>
+</body></html>`;
 }

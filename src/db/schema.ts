@@ -11,6 +11,12 @@ export const courses = sqliteTable("courses", {
   createdAt: integer("created_at").notNull(),
   /** Owning install (X-Device-Id). NULL = legacy, unclaimed (claimable via POST /v1/devices/claim). */
   deviceId: text("device_id"),
+  /** Course exam pack PDF (Blob/local URL). */
+  examPdfUrl: text("exam_pdf_url"),
+  /** Fingerprint of source lecture job ids so clients know when to rebuild. */
+  examFingerprint: text("exam_fingerprint"),
+  /** JSON ExamPack artifact URL (optional; for memory pairs / debug). */
+  examJsonUrl: text("exam_json_url"),
 });
 
 export const lectures = sqliteTable("lectures", {

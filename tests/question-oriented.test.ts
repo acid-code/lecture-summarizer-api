@@ -1,15 +1,41 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isQuestionSection, MATH_RULES, STRUCTURE_MODE, spokenSectionCount } from "../src/lib/providers/prompts";
+import { isQuestionSection, MATH_RULES, STRUCTURE_MODE, spokenSectionCount, normalizeStructureMode } from "../src/lib/providers/prompts";
 import { renderStudyHtml, bidi } from "../src/lib/pipeline/render";
 import type { LectureSummary } from "../src/lib/providers/types";
 
-test("isQuestionSection detects kind and headings", () => {
-  assert.ok(isQuestionSection({ kind: "question", heading: "Anything" }));
+test("isQuestionSection requires numbered drill headings (kind alone is not enough)", () => {
+  assert.ok(!isQuestionSection({ kind: "question", heading: "Anything" }));
   assert.ok(isQuestionSection({ heading: "שאלה 3: VC dimension" }));
   assert.ok(isQuestionSection({ heading: "Exercise 2 — shattering" }));
   assert.ok(!isQuestionSection({ heading: "הגדרת VC dimension" }));
   assert.ok(!isQuestionSection({ kind: "topic", heading: "מבוא" }));
+  assert.ok(!isQuestionSection({ kind: "question", heading: "מבוא ל-VC" }));
+});
+
+test("normalizeStructureMode demotes lectures falsely tagged as questions", () => {
+  const bad = normalizeStructureMode({
+    structure_mode: "questions" as const,
+    sections: [
+      { kind: "question" as const, heading: "VC dimension", bullets: ["a"], important_notes: ["tip"] },
+      { kind: "question" as const, heading: "Shattering", bullets: ["b"], important_notes: ["tip2"] },
+      { heading: "דגשים חשובים של המרצה", bullets: ["c"] },
+    ],
+  });
+  assert.equal(bad.structure_mode, "topics");
+  assert.equal((bad.sections![0] as { kind?: string }).kind, undefined);
+  assert.equal((bad.sections![0] as { important_notes?: string[] }).important_notes, undefined);
+  assert.ok(!isQuestionSection(bad.sections![0]));
+
+  const drill = normalizeStructureMode({
+    structure_mode: "topics" as const,
+    sections: [
+      { heading: "שאלה 1: A", bullets: ["a"] },
+      { heading: "שאלה 2: B", bullets: ["b"] },
+    ],
+  });
+  assert.equal(drill.structure_mode, "questions");
+  assert.equal(drill.sections![0].kind, "question");
 });
 
 test("spokenSectionCount includes question sections", () => {
@@ -86,6 +112,23 @@ test("topic summary without questions stays unchanged visually", () => {
   assert.ok(!html.includes("הערות לפתרון"));
   assert.ok(!html.includes("card question"));
   assert.ok(html.includes("katex"));
+});
+
+test("falsely tagged lecture does not render question cards", () => {
+  const html = renderStudyHtml({
+    title: "הרצאה",
+    overview: "תיאוריה",
+    structure_mode: "questions",
+    glossary: [],
+    sections: [
+      { kind: "question", heading: "הגדרות", bullets: ["עובדה"], important_notes: ["אל תשתמשו בזה"] },
+      { kind: "question", heading: "דוגמאות", bullets: ["עוד"] },
+    ],
+  });
+  assert.ok(!html.includes("card question"));
+  assert.ok(!html.includes("מבנה:"));
+  assert.ok(!html.includes("הערות לפתרון"));
+  assert.ok(!/<span class="badge-q">/.test(html));
 });
 
 test("bidi renders display math in note-like strings", () => {

@@ -6,7 +6,7 @@
     },
     {
       "path": "/v1/admin/job-nudge",
-      "schedule": "*/15 * * * *"
+      "schedule": "15 4 * * *"
     }
   ]
 }

@@ -2,8 +2,9 @@ import { slidesForSummary } from "./prompts";
 import { GoogleGenAI, createPartFromUri, type Part } from "@google/genai";
 import { readFileUrl } from "../storage";
 import { clipper } from "./clip";
-import { applyRepairs, repairPrompt, spellingPrompt, summaryPrompt, NO_NIQQUD, summaryTooShort, summaryOvergrown, spokenSectionCount, expandNote, shrinkNote, depthTargets } from "./prompts";
+import { applyRepairs, repairPrompt, spellingPrompt, summaryPrompt, NO_NIQQUD, summaryTooShort, summaryOvergrown, spokenSectionCount, expandNote, shrinkNote, depthTargets, normalizeStructureMode } from "./prompts";
 import { hierarchicalStep } from "./hierarchical";
+import { summarizeSlidesDensity } from "./slides-summary";
 import type { AiProvider, Repair, LectureSummary, Transcript, WindowTranscript } from "./types";
 
 /**
@@ -20,6 +21,13 @@ export const models = () => {
     : DEFAULT_LADDER;
   return [...new Set([primary, ...fb])];
 };
+export type GeminiTask = "asr" | "repair" | "summary" | "slides" | "hier";
+/** GEMINI_MODELS_<TASK>="m1,m2" overrides the ladder for that task; unset = models() (current behavior). */
+export function modelsFor(task?: GeminiTask): string[] {
+  const raw = task ? process.env[`GEMINI_MODELS_${task.toUpperCase()}`] : undefined;
+  const list = raw ? [...new Set(raw.split(",").map((s) => s.trim()).filter(Boolean))] : [];
+  return list.length ? list : models();
+}
 export const QUOTA_MSG = "All Gemini models have hit their daily quota (RPD); retry after 00:00 UTC";
 export class QuotaError extends Error { constructor() { super(QUOTA_MSG); } }
 import { availableModels, markExhausted, isDailyQuota, isQuotaError, retryDelaySec } from "./quota";
@@ -60,11 +68,11 @@ async function uploadToGemini(ai: GoogleGenAI, url: string, fallbackMime: string
  * - Invalid/revoked key → next key. Quota: when a key's ladder is exhausted the next key is tried; a key whose
  *   ladder hit RPD is skipped until 00:00 UTC. If every key is exhausted/rate-limited, throw a short QuotaError.
  */
-async function withRetry<T>(f: (model: string, ai: GoogleGenAI) => Promise<T>, tries = Number(process.env.GEMINI_RETRIES || 5)): Promise<T> {
+async function withRetry<T>(f: (model: string, ai: GoogleGenAI) => Promise<T>, tries = Number(process.env.GEMINI_RETRIES || 5), task?: GeminiTask): Promise<T> {
   const keys = keyPool.available(geminiKeys());
   let authErr: Error | undefined, sawQuota = false;
   for (let i = 0; i < keys.length; i++) {
-    try { return await withRetryKey(keys[i], i, f, tries); } catch (e) {
+    try { return await withRetryKey(keys[i], i, f, tries, task); } catch (e) {
       if (e instanceof KeyAuthError) { authErr = e; console.warn(`gemini key#${i} (${keyId(keys[i])}): auth error, trying next key`); continue; }
       if (!(e instanceof QuotaError)) throw e;
       sawQuota = true;
@@ -80,13 +88,13 @@ class KeyAuthError extends Error {}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** One key: walk its model ladder. Cooldown rows are per key (`model#keyId`), so one key's RPD doesn't block others. */
-async function withRetryKey<T>(key: string, kidx: number, f: (model: string, ai: GoogleGenAI) => Promise<T>, tries: number): Promise<T> {
+async function withRetryKey<T>(key: string, kidx: number, f: (model: string, ai: GoogleGenAI) => Promise<T>, tries: number, task?: GeminiTask): Promise<T> {
   const ai = clientFor(key), kid = keyId(key), slot = (m: string) => `${m}#${kid}`;
   const budget = Number(process.env.GEMINI_RETRY_BUDGET_MS || 90_000);
   const overloadTries = Number(process.env.GEMINI_OVERLOAD_RETRIES || 3);
   const start = Date.now();
   let transient = 0, overloaded = 0;
-  const all = models();
+  const all = modelsFor(task);
   const { available } = await availableModels(all.map(slot));
   const ladder = all.filter((m) => available.includes(slot(m)));
   if (!ladder.length) throw new KeyQuotaError(true);
@@ -169,10 +177,44 @@ export class BadJsonError extends Error {
   constructor(message: string, public raw: string) { super(message); }
 }
 
-async function rawJson(contents: (Part | string)[], schema?: object, maxOutputTokens = 65536): Promise<string> {
+/**
+ * Gemini sometimes emits illegal JSON escapes inside strings (`\'`, `\a`, bare `\`).
+ * Rewrite only those so JSON.parse can succeed without changing valid escapes.
+ */
+export function fixJsonEscapes(s: string): string {
+  let out = "";
+  let inStr = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]!;
+    if (!inStr) {
+      if (c === '"') inStr = true;
+      out += c;
+      continue;
+    }
+    if (c === "\\") {
+      const n = s[i + 1];
+      if (n == null) { out += "\\\\"; continue; }
+      if ('"\\/bfnrt'.includes(n)) { out += `\\${n}`; i++; continue; }
+      if (n === "u" && /^[0-9a-fA-F]{4}/.test(s.slice(i + 2, i + 6))) {
+        out += s.slice(i, i + 6);
+        i += 5;
+        continue;
+      }
+      // Illegal escape (`\'`, `\a`, …) → drop the backslash, keep the next char.
+      out += n;
+      i++;
+      continue;
+    }
+    if (c === '"') inStr = false;
+    out += c;
+  }
+  return out;
+}
+
+async function rawJson(contents: (Part | string)[], schema?: object, maxOutputTokens = 65536, task?: GeminiTask): Promise<string> {
   const r = await withRetry((model, ai) => ai.models.generateContent({
     model, contents, config: { responseMimeType: "application/json", maxOutputTokens, ...(schema ? { responseSchema: schema } : {}) },
-  }));
+  }), undefined, task);
   return r.text ?? "";
 }
 
@@ -185,22 +227,25 @@ export function unwrapSummary<T>(x: T): T {
 }
 
 function parse<T>(raw: string): T {
-  try { return JSON.parse(extractJson(raw)) as T; } catch (e) {
-    throw new BadJsonError(`invalid JSON from Gemini (${raw.length} chars): ${(e as Error).message}`, raw);
+  const extracted = extractJson(raw);
+  try { return JSON.parse(extracted) as T; } catch (e1) {
+    try { return JSON.parse(fixJsonEscapes(extracted)) as T; } catch (e) {
+      throw new BadJsonError(`invalid JSON from Gemini (${raw.length} chars): ${(e as Error).message}`, raw);
+    }
   }
 }
 
 /** Generate + parse JSON; on invalid/truncated JSON re-ask (GEMINI_JSON_RETRIES, default 2) then try a repair prompt. */
-async function json<T>(contents: (Part | string)[], schema?: object, opts: { repair?: boolean; maxOutputTokens?: number } = {}): Promise<T> {
+async function json<T>(contents: (Part | string)[], schema?: object, opts: { repair?: boolean; maxOutputTokens?: number; task?: GeminiTask } = {}): Promise<T> {
   const tries = Number(process.env.GEMINI_JSON_RETRIES || 2);
   let last: BadJsonError | undefined;
   for (let i = 0; i < tries; i++) {
-    const raw = await rawJson(contents, schema, opts.maxOutputTokens);
+    const raw = await rawJson(contents, schema, opts.maxOutputTokens, opts.task);
     try { return parse<T>(raw); } catch (e) { if (!(e instanceof BadJsonError)) throw e; last = e; console.warn(e.message); }
   }
   if (opts.repair !== false && last && last.raw.length < 200_000) {
     const fixed = await rawJson([`The following JSON is invalid or truncated. Return ONLY the corrected, complete, valid JSON with the same ` +
-      `structure (close any truncated arrays/objects; drop an incomplete last item). Do not add commentary.\n\n${last.raw}`], schema);
+      `structure (close any truncated arrays/objects; drop an incomplete last item). Do not add commentary.\n\n${last.raw}`], schema, undefined, opts.task);
     try { return parse<T>(fixed); } catch (e) { if (!(e instanceof BadJsonError)) throw e; last = e; }
   }
   throw last!;
@@ -265,7 +310,7 @@ export const geminiProvider: AiProvider = {
         `This clip is ${Math.round(we - ws)}s long. Transcribe ALL speech in this clip from its very beginning to its end; ` +
         `timestamps are seconds from the start of THIS clip (0 = clip start). ` +
         (audio.prevText ? `The clip may begin mid-sentence; the previous part ended with: «${audio.prevText}». Do not repeat those words. ` : "") +
-        TAIL], transcriptSchema, { repair: false, maxOutputTokens: asrTokenCap(ws, we) });
+        TAIL], transcriptSchema, { repair: false, maxOutputTokens: asrTokenCap(ws, we), task: "asr" });
       let t: WindowTranscript;
       try { t = await call(); } catch (e) {
         // Salvage/repair here so clip-relative times get offset; otherwise let run() split the window.
@@ -274,7 +319,7 @@ export const geminiProvider: AiProvider = {
         if (salvaged.length >= 2) { console.warn(`ASR clip: salvaged ${salvaged.length} segments from invalid JSON`); t = { language: "he", segments: salvaged }; }
         else if (we - ws > MIN_SPLIT_SEC * 2) throw e;
         else t = parse<WindowTranscript>(await rawJson([`The following JSON is invalid or truncated. Return ONLY corrected, complete, ` +
-          `valid JSON with the same structure (drop an incomplete last item).\n\n${e.raw}`], transcriptSchema));
+          `valid JSON with the same structure (drop an incomplete last item).\n\n${e.raw}`], transcriptSchema, undefined, "asr"));
       }
       const segs = (t.segments ?? []).map((s) => typeof s.start === "number" && typeof s.end === "number"
         ? { ...s, start: Math.min(we, s.start + ws), end: Math.min(we, s.end + ws) } : s);
@@ -288,7 +333,7 @@ export const geminiProvider: AiProvider = {
             (audio.prevText ? `Everything before ${fmt(ws)} is ALREADY transcribed; it ended with: «${audio.prevText}». Do NOT transcribe ` +
               `those words again: start with the speech that follows them, at or after ${fmt(ws)}. ` : "")
           : "") + TAIL,
-    ], transcriptSchema, { repair: false, maxOutputTokens: asrTokenCap(ws, we) });
+    ], transcriptSchema, { repair: false, maxOutputTokens: asrTokenCap(ws, we), task: "asr" });
 
     // On persistent bad JSON: split the window in half and merge; at the minimum size try the repair path.
     const run = async (ws?: number, we?: number): Promise<WindowTranscript> => {
@@ -304,7 +349,7 @@ export const geminiProvider: AiProvider = {
         }
         try {
           const fixed = await rawJson([`The following JSON is invalid or truncated. Return ONLY corrected, complete, valid JSON with the same ` +
-            `structure (drop an incomplete last item).\n\n${e.raw}`], transcriptSchema);
+            `structure (drop an incomplete last item).\n\n${e.raw}`], transcriptSchema, undefined, "asr");
           return parse<WindowTranscript>(fixed);
         } catch (e2) {
           if (!(e2 instanceof BadJsonError)) throw e2;
@@ -368,7 +413,7 @@ export const geminiProvider: AiProvider = {
       const out: Repair[] = [];
       for (let o = 0; o < tr.segments.length; o += size) {
         const part = { ...tr, segments: tr.segments.slice(o, o + size) };
-        try { const r = await json<Repair[]>([mk(part, ctx, o)]); if (Array.isArray(r)) out.push(...r); }
+        try { const r = await json<Repair[]>([mk(part, ctx, o)], undefined, { task: "repair" }); if (Array.isArray(r)) out.push(...r); }
         catch (e) { if (o === 0 && mk === repairPrompt) throw e; console.warn(`repair chunk ${o} skipped: ${(e as Error).message}`); }
       }
       return out;
@@ -380,21 +425,24 @@ export const geminiProvider: AiProvider = {
     return [...first, ...second.map((r) => ({ ...r, evidence: r.evidence || "spelling" }))];
   },
   async summarize(t, repairs, ctx): Promise<LectureSummary> {
-    const prompt = summaryPrompt(t, repairs, ctx);
-    const first = unwrapSummary(await json<LectureSummary>([prompt]));
     const dn = ctx.density ?? "standard";
+    if (dn === "slides") {
+      return summarizeSlidesDensity(t, ctx, (p) => json([p], undefined, { task: "slides" }));
+    }
+    const prompt = summaryPrompt(t, repairs, ctx);
+    const first = normalizeStructureMode(unwrapSummary(await json<LectureSummary>([prompt], undefined, { task: "summary" })));
     if (!ctx.slidesOnly && summaryOvergrown(first, t, dn)) {
       console.warn(`summary overgrew thin transcript (${spokenSectionCount(first)} sections, ${dn}); retrying with shrink`);
-      const shrunk = await json<LectureSummary>([prompt + shrinkNote(t, dn)]).then(unwrapSummary).catch(() => null);
+      const shrunk = await json<LectureSummary>([prompt + shrinkNote(t, dn)], undefined, { task: "summary" }).then(unwrapSummary).then(normalizeStructureMode).catch(() => null);
       if (shrunk && (spokenSectionCount(shrunk) < spokenSectionCount(first) || !summaryOvergrown(shrunk, t, dn))) return shrunk;
     }
     if (ctx.slidesOnly || !summaryTooShort(first, t, dn)) return first;
     console.warn(`summary too short (${spokenSectionCount(first)} sections, target ${depthTargets(t, dn).sections}, ${dn}); retrying with expand`);
-    const second = await json<LectureSummary>([prompt + expandNote(spokenSectionCount(first), t, dn)]).then(unwrapSummary).catch(() => null);
+    const second = await json<LectureSummary>([prompt + expandNote(spokenSectionCount(first), t, dn)], undefined, { task: "summary" }).then(unwrapSummary).then(normalizeStructureMode).catch(() => null);
     return second && spokenSectionCount(second) > spokenSectionCount(first) ? second : first;
   },
   hierarchicalStep(t, ctx, state, deadline) {
-    return hierarchicalStep(t, ctx, <T,>(p: string) => json<T>([p]), state, deadline);
+    return hierarchicalStep(t, ctx, <T,>(p: string) => json<T>([p], undefined, { task: "hier" }), state, deadline);
   },
 };
 
@@ -407,5 +455,37 @@ export async function tutorJson(system:string,payload:unknown):Promise<unknown>{
       systemInstruction:system,responseMimeType:"application/json",temperature:0.25,maxOutputTokens:2400,httpOptions:{timeout:20000},abortSignal:signal,
     }});
   });
-  return JSON.parse(extractJson(result.text ?? ""));
+  // Same escape repair as summaries — Gemini often emits illegal \' / \a inside Hebrew notes.
+  return parse(result.text ?? "");
+}
+
+/** Compress detailed→compact/standard (larger output than tutor, still one JSON call). */
+export async function deriveJson(system: string, payload: unknown): Promise<unknown> {
+  const signal = AbortSignal.timeout(90_000);
+  const tries = Number(process.env.GEMINI_JSON_RETRIES || 2);
+  let last: BadJsonError | undefined;
+  for (let i = 0; i < tries; i++) {
+    const result = await withRetry((model, ai) => {
+      if (signal.aborted) throw new Error("derive_deadline");
+      return ai.models.generateContent({
+        model,
+        contents: JSON.stringify(payload),
+        config: {
+          systemInstruction: system,
+          responseMimeType: "application/json",
+          temperature: 0.2,
+          maxOutputTokens: 8192,
+          httpOptions: { timeout: 80_000 },
+          abortSignal: signal,
+        },
+      });
+    }, undefined, "summary");
+    try { return parse(result.text ?? ""); }
+    catch (e) {
+      if (!(e instanceof BadJsonError)) throw e;
+      last = e;
+      console.warn(`deriveJson: ${e.message}`);
+    }
+  }
+  throw last!;
 }
