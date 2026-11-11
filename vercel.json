@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/v1/admin/blob-gc",
+      "schedule": "0 4 * * *"
+    }
+  ]
+}

@@ -12,6 +12,25 @@ async function route(req: Request, { params }: Ctx) {
   const m = req.method;
   if (m === "GET" && p.join("/") === "health")
     return Response.json({ ok: true, provider: getProvider().name, blob: !!process.env.BLOB_READ_WRITE_TOKEN, commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null, figures: process.env.FIGURES ?? "on" });
+
+  // Blob GC before device auth: daily Vercel Cron uses GET; manual ops use POST + API_TOKEN.
+  // Cron auth: Bearer CRON_SECRET (preferred) or Vercel's x-vercel-cron header when CRON_SECRET is unset.
+  if (p[0] === "admin" && p[1] === "blob-gc" && !p[2] && (m === "POST" || m === "GET")) {
+    const authz = req.headers.get("authorization") ?? "";
+    const cronSecret = process.env.CRON_SECRET;
+    const cronOk = (cronSecret && authz === `Bearer ${cronSecret}`)
+      || (!cronSecret && req.headers.get("x-vercel-cron") === "1");
+    const tokenOk = !process.env.API_TOKEN || authz === `Bearer ${process.env.API_TOKEN}`;
+    if (m === "GET" ? !cronOk : !tokenOk) return Response.json({ error: "unauthorized" }, { status: 401 });
+    const h0 = await import("@/lib/v1/handlers");
+    try { await h0.ensureDb(); } catch (e) {
+      return Response.json({ error: (e as Error).message }, { status: 503 });
+    }
+    const { runBlobGc } = await import("@/lib/blob-gc");
+    const dry = new URL(req.url).searchParams.get("dry_run") === "1";
+    return Response.json(await runBlobGc({ dryRun: dry, orphans: true }));
+  }
+
   const auth = authenticate(req); if (auth instanceof Response) return auth;
   const dev = auth.deviceId;
   // Load handlers/db only after health so /v1/health never initializes the DB.
