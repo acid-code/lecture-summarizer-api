@@ -13,9 +13,8 @@ async function route(req: Request, { params }: Ctx) {
   if (m === "GET" && p.join("/") === "health")
     return Response.json({ ok: true, provider: getProvider().name, blob: !!process.env.BLOB_READ_WRITE_TOKEN, commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null, figures: process.env.FIGURES ?? "on" });
 
-  // Blob GC before device auth: daily Vercel Cron uses GET; manual ops use POST + API_TOKEN.
-  // Cron auth: Bearer CRON_SECRET (preferred) or Vercel's x-vercel-cron header when CRON_SECRET is unset.
-  if (p[0] === "admin" && p[1] === "blob-gc" && !p[2] && (m === "POST" || m === "GET")) {
+  // Admin ops before device auth. Cron: Bearer CRON_SECRET (or x-vercel-cron when unset). Manual: POST + API_TOKEN.
+  if (p[0] === "admin" && (p[1] === "blob-gc" || p[1] === "job-nudge") && !p[2] && (m === "POST" || m === "GET")) {
     const authz = req.headers.get("authorization") ?? "";
     const cronSecret = process.env.CRON_SECRET;
     const cronOk = (cronSecret && authz === `Bearer ${cronSecret}`)
@@ -26,9 +25,13 @@ async function route(req: Request, { params }: Ctx) {
     try { await h0.ensureDb(); } catch (e) {
       return Response.json({ error: (e as Error).message }, { status: 503 });
     }
-    const { runBlobGc } = await import("@/lib/blob-gc");
     const dry = new URL(req.url).searchParams.get("dry_run") === "1";
-    return Response.json(await runBlobGc({ dryRun: dry, orphans: true }));
+    if (p[1] === "blob-gc") {
+      const { runBlobGc } = await import("@/lib/blob-gc");
+      return Response.json(await runBlobGc({ dryRun: dry, orphans: true }));
+    }
+    const { runJobNudge } = await import("@/lib/job-nudge");
+    return Response.json(await runJobNudge({ dryRun: dry }));
   }
 
   const auth = authenticate(req); if (auth instanceof Response) return auth;

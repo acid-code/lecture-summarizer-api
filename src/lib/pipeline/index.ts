@@ -31,6 +31,8 @@ export interface Artifacts {
   /** Gemini 503 soft hold: advance is a no-op until this epoch ms; overloadHolds counts consecutive holds. */
   holdUntil?: number;
   overloadHolds?: number;
+  /** Soft hold specifically from Blob quota/suspend — cron probe clears these when writes work again. */
+  blobHold?: boolean;
   /** Heavy-stage run lease: set (and persisted) before repair/summary/pdf work starts, cleared when the invocation writes back. */
   run?: { stage: string; n: number; at: number };
 }
@@ -260,8 +262,8 @@ export async function retryJob(jobId: string, force = false): Promise<RetryResul
   const stuck = job.stage !== "done" && job.stage !== "failed" && Date.now() - job.updatedAt > STUCK_MS;
   if (job.stage === "done" || (job.stage !== "failed" && !stuck && !force)) return { ok: false, reason: "not_retryable", job };
   const a = JSON.parse(job.artifacts) as Artifacts;
-  // Drop dead leases / overload holds so the next poll actually runs work (Vercel 300s kills leave `run` behind).
-  delete a.run; delete a.holdUntil; delete a.overloadHolds;
+  // Drop dead leases / overload / blob holds so the next poll actually runs work.
+  delete a.run; delete a.holdUntil; delete a.overloadHolds; delete a.blobHold;
   a.progressDetail = { stage: resumeStage(a), label: stageLabel(resumeStage(a)) };
   const stage = resumeStage(a);
   const [row] = await db.update(schema.jobs).set({ stage, error: null, artifacts: JSON.stringify(a), updatedAt: Date.now() })
@@ -276,7 +278,7 @@ export async function cancelJob(jobId: string): Promise<RetryResult> {
   if (!job) return { ok: false, reason: "not_found" };
   if (job.stage === "done" || job.stage === "failed") return { ok: true, job };
   const a = JSON.parse(job.artifacts) as Artifacts;
-  delete a.run; delete a.holdUntil; delete a.overloadHolds;
+  delete a.run; delete a.holdUntil; delete a.overloadHolds; delete a.blobHold;
   a.progressDetail = { stage: "failed", label: stageLabel("failed") };
   const [row] = await db.update(schema.jobs)
     .set({ stage: "failed", error: "cancelled_by_user", artifacts: JSON.stringify(a), updatedAt: Date.now() })
@@ -303,8 +305,8 @@ export async function advanceJob(jobId: string) {
     courseExcerpts: (q, budget) => retrieveExcerpts(course?.contextText, q, budget),
   };
   const a = JSON.parse(job.artifacts) as Artifacts;
-  if (job.stage !== "failed" && a.holdUntil && a.holdUntil > Date.now()) return job; // overload hold: don't call Gemini yet
-  delete a.holdUntil;
+  if (job.stage !== "failed" && a.holdUntil && a.holdUntil > Date.now()) return job; // soft hold: don't call Gemini / Blob yet
+  delete a.holdUntil; delete a.blobHold;
   const ai = getProvider();
   if (a.slidesOnly) { ctx.slidesOnly = true; ctx.slidesText = materialsText(lecture, course); }
   ctx.density = jobDensity(a);
@@ -500,6 +502,21 @@ export async function advanceJob(jobId: string) {
         .where(eq(schema.jobs.id, jobId)).returning();
       return row;
     }
+    // Hobby Blob suspend/quota: keep the job at pdf/summary instead of Failed — cron nudge resumes when writable.
+    if (isBlobCapacityError(e)) {
+      const wait = Number(process.env.BLOB_HOLD_MS || 30 * 60_000);
+      a.holdUntil = Date.now() + wait;
+      a.blobHold = true;
+      a.progressDetail = {
+        stage: current,
+        label: `Blob storage suspended/full — auto-retry in ${Math.max(1, Math.round(wait / 60_000))} min`,
+      };
+      console.warn(`job ${jobId} ${current}: blob capacity, holding ${Math.round(wait / 1000)}s`);
+      const [row] = await db.update(schema.jobs)
+        .set({ stage: current, error: null, artifacts: JSON.stringify(a), updatedAt: Date.now() })
+        .where(eq(schema.jobs.id, jobId)).returning();
+      return row;
+    }
     const [row] = await db.update(schema.jobs)
       .set({ stage: "failed", error: `${current}: ${shortErr(e)}`, artifacts: JSON.stringify(a), updatedAt: Date.now() })
       .where(eq(schema.jobs.id, jobId)).returning();
@@ -519,6 +536,12 @@ function shortErr(e: unknown): string {
   if (/daily quota \(RPD\)/.test(m)) return m;
   if (/\b429\b|RESOURCE_EXHAUSTED/i.test(m)) return "Gemini rate limit / quota hit; retry later";
   return m.length > 400 ? m.slice(0, 400) + "…" : m;
+}
+
+export function isBlobCapacityError(e: unknown): boolean {
+  const m = (e as Error)?.message ?? String(e);
+  return /Vercel Blob:.*(quota exceeded|store has been suspended|Storage quota)/i.test(m)
+    || /blob.*suspended|storage quota exceeded/i.test(m);
 }
 
 /** Hierarchical summary for long lectures: SUMMARY_HIERARCHICAL=auto (default; ASR span ≥ SUMMARY_HIER_MIN_MINUTES, default 65) | on | off. */

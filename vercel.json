@@ -3,6 +3,10 @@
     {
       "path": "/v1/admin/blob-gc",
       "schedule": "0 4 * * *"
+    },
+    {
+      "path": "/v1/admin/job-nudge",
+      "schedule": "*/15 * * * *"
     }
   ]
 }
