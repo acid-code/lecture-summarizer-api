@@ -436,6 +436,59 @@ export async function postCancel(jid: string) {
   return j(jobView(r.job!), 202);
 }
 
+/** POST /v1/lectures/{id}/jobs/cancel-all — cancel every non-terminal job in one idempotent call. */
+export async function cancelAllLectureJobs(lid: string) {
+  const jobs = await db.select().from(schema.jobs).where(and(eq(schema.jobs.lectureId, lid), ne(schema.jobs.stage, "done")));
+  const cancelled: string[] = [];
+  for (const job of jobs) {
+    if (job.stage === "failed" && job.error === "cancelled_by_user") continue;
+    const r = await cancelJob(job.id);
+    if (r.ok) cancelled.push(job.id);
+  }
+  return j({ lecture_id: lid, cancelled, count: cancelled.length });
+}
+
+export async function failJobs(jobIds: string[], all = false) {
+  const jobs = all
+    ? await db.select().from(schema.jobs).where(ne(schema.jobs.stage, "done"))
+    : await db.select().from(schema.jobs).where(inArray(schema.jobs.id, jobIds));
+  const failed: string[] = [];
+  for (const job of jobs) {
+    if (job.stage === "failed") continue;
+    const a = JSON.parse(job.artifacts || "{}") as Artifacts;
+    delete a.run;
+    delete a.holdUntil;
+    delete a.overloadHolds;
+    delete a.blobHold;
+    a.progressDetail = { stage: "failed", label: "Failed" };
+    await db.update(schema.jobs).set({
+      stage: "failed",
+      error: "failed_by_api: source or provider recovery required",
+      artifacts: JSON.stringify(a),
+      updatedAt: Date.now(),
+    }).where(eq(schema.jobs.id, job.id));
+    failed.push(job.id);
+  }
+  return { failed, count: failed.length };
+}
+
+/** POST /v1/lectures/{id}/jobs/advance-all — start one bounded advance for every non-terminal job. */
+export async function advanceAllLectureJobs(lid: string) {
+  const jobs = await db.select().from(schema.jobs).where(and(eq(schema.jobs.lectureId, lid), ne(schema.jobs.stage, "done")));
+  const advanced: string[] = [];
+  const skipped: { job_id: string; reason: string }[] = [];
+  for (const job of jobs) {
+    if (job.stage === "failed" && job.error === "cancelled_by_user") continue;
+    try {
+      await advanceJob(job.id);
+      advanced.push(job.id);
+    } catch (e) {
+      skipped.push({ job_id: job.id, reason: (e as Error).message?.slice(0, 200) || "advance failed" });
+    }
+  }
+  return j({ lecture_id: lid, advanced, skipped });
+}
+
 /** GET /v1/jobs — 20 most recent jobs, for debugging without the phone's job id. */
 export async function listJobs(dev: string | null = null) {
   const rows = await db.select({ job_id: schema.jobs.id, lecture_id: schema.jobs.lectureId, stage: schema.jobs.stage, error: schema.jobs.error,

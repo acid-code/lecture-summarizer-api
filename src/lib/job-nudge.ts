@@ -37,6 +37,7 @@ export type JobNudgeReport = {
   superseded: string[];
   advanced: string[];
   retried: string[];
+  sourceMissingFailed: string[];
   skipped: { id: string; reason: string }[];
   errors: { id: string; error: string }[];
 };
@@ -177,7 +178,7 @@ function densityOf(a: Artifacts): Density | null {
   }
 }
 
-export async function runJobNudge(opts: { dryRun?: boolean; forceBlob?: boolean; maxAdvance?: number } = {}): Promise<JobNudgeReport> {
+export async function runJobNudge(opts: { dryRun?: boolean; forceBlob?: boolean; maxAdvance?: number; failMissing?: boolean } = {}): Promise<JobNudgeReport> {
   const dryRun = !!opts.dryRun;
   const now = Date.now();
   const blobWritable = opts.forceBlob ? true : await probeBlobWritable();
@@ -261,6 +262,7 @@ export async function runJobNudge(opts: { dryRun?: boolean; forceBlob?: boolean;
     superseded: [],
     advanced: [],
     retried: [],
+    sourceMissingFailed: [],
     skipped: skip.map(({ c, reason }) => ({ id: c.id, reason })),
     errors: [],
   };
@@ -302,6 +304,21 @@ export async function runJobNudge(opts: { dryRun?: boolean; forceBlob?: boolean;
       const readiness = await verifyR2AudioReady(c.lectureId, parseArtifacts(row.artifacts));
       if (!readiness.ready) {
         report.skipped.push({ id: c.id, reason: readiness.reason || "r2_not_ready" });
+        if (opts.failMissing && readiness.reason === "no_phone_audio_or_material" && !dryRun) {
+          const a = parseArtifacts(row.artifacts);
+          delete a.run;
+          delete a.holdUntil;
+          delete a.overloadHolds;
+          delete a.blobHold;
+          a.progressDetail = { stage: "failed", label: "Failed" };
+          await db.update(schema.jobs).set({
+            stage: "failed",
+            error: "source_missing: no phone audio or material (reupload/reimport required)",
+            artifacts: JSON.stringify(a),
+            updatedAt: Date.now(),
+          }).where(sql`${schema.jobs.id} = ${c.id}`);
+          report.sourceMissingFailed.push(c.id);
+        }
         continue;
       }
       // Clear soft holds / dead leases, then advance one unit.

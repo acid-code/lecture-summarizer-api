@@ -27,7 +27,7 @@ let stable = 0;
 let last = "";
 
 while (Date.now() < until) {
-  const url = `${base}/v1/admin/job-nudge?${apply ? "" : "dry_run=1&"}max=${encodeURIComponent(max)}`;
+  const url = `${base}/v1/admin/job-nudge?${apply ? "" : "dry_run=1&"}max=${encodeURIComponent(max)}&fail_missing=1`;
   const res = await fetch(url, { method: "POST", headers: { authorization: `Bearer ${token}` } });
   const text = await res.text();
   let report;
