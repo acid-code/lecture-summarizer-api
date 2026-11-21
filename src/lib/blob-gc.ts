@@ -1,5 +1,5 @@
 /**
- * Reclaim Vercel Blob quota:
+ * Reclaim storage and lazy-migration cleanup:
  *  1) leftover audio on lectures that already finished (or finished ASR)
  *  2) study HTML blobs when a real PDF exists (HTML can be regenerated)
  *  3) superseded study PDFs (older done jobs for the same lecture+density)
@@ -8,10 +8,9 @@
  * Call runBlobGc from admin/cron. After each PDF write, pruneSupersededStudyBlobs
  * (scoped to that lecture) + releaseStudyBlobs on replace keep quota from climbing.
  */
-import { list, del } from "@vercel/blob";
 import { eq, and, isNotNull, ne } from "drizzle-orm";
 import { db, schema } from "@/db";
-import { deleteFileUrl } from "./storage";
+import { deleteFileUrl, listR2Objects, useR2 } from "./storage";
 import { parseDensity, type Density } from "./providers/types";
 
 const fmt = (n: number) => Math.round((n / (1024 * 1024)) * 10) / 10;
@@ -25,14 +24,8 @@ export async function releaseStudyBlobs(a: { pdf?: string | null; html?: string 
 }
 
 async function allBlobUrls(): Promise<{ url: string; size: number; pathname: string }[]> {
-  const out: { url: string; size: number; pathname: string }[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await list({ cursor, limit: 1000 });
-    for (const b of page.blobs) out.push({ url: b.url, size: b.size || 0, pathname: b.pathname || "" });
-    cursor = page.hasMore ? page.cursor : undefined;
-  } while (cursor);
-  return out;
+  const objects = await listR2Objects();
+  return objects.map((object) => ({ url: object.url, size: object.size, pathname: object.key }));
 }
 
 function jobDensityOf(artifacts: string): Density {
@@ -159,7 +152,7 @@ export async function runBlobGc(opts: { dryRun?: boolean; orphans?: boolean } = 
   // Prefer list() sizes when available so we can free accurately without per-URL head().
   let blobs: { url: string; size: number; pathname: string }[] = [];
   const sizeByUrl = new Map<string, number>();
-  if (wantOrphans && process.env.BLOB_READ_WRITE_TOKEN) {
+  if (wantOrphans && useR2()) {
     blobs = await allBlobUrls();
     for (const b of blobs) sizeByUrl.set(norm(b.url), b.size);
   }
@@ -245,15 +238,9 @@ export async function runBlobGc(opts: { dryRun?: boolean; orphans?: boolean } = 
         const BATCH = 40;
         for (let i = 0; i < orphans.length; i += BATCH) {
           const batch = orphans.slice(i, i + BATCH);
-          try {
-            await del(batch.map((b) => b.url));
-            deleted.orphans += batch.length;
-            freed += batch.reduce((s, b) => s + b.size, 0);
-          } catch {
-            for (const b of batch) {
-              try { await del(b.url); deleted.orphans++; freed += b.size; }
-              catch (e) { failed++; details.push(`orphan-fail ${(e as Error).message}`); }
-            }
+          for (const b of batch) {
+            try { await deleteFileUrl(b.url); deleted.orphans++; freed += b.size; }
+            catch (e) { failed++; details.push(`orphan-fail ${(e as Error).message}`); }
           }
         }
       } else {

@@ -11,7 +11,7 @@ async function route(req: Request, { params }: Ctx) {
   const p = (await params).path;
   const m = req.method;
   if (m === "GET" && p.join("/") === "health")
-    return Response.json({ ok: true, provider: getProvider().name, blob: !!process.env.BLOB_READ_WRITE_TOKEN, commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null, figures: process.env.FIGURES ?? "on" });
+    return Response.json({ ok: true, provider: getProvider().name, storage: process.env.R2_BUCKET_NAME ? "r2" : "local", commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null, figures: process.env.FIGURES ?? "on" });
 
   // Admin ops before device auth. Cron: Bearer CRON_SECRET (or x-vercel-cron when unset). Manual: POST + API_TOKEN.
   if (p[0] === "admin" && (p[1] === "blob-gc" || p[1] === "job-nudge") && !p[2] && (m === "POST" || m === "GET")) {

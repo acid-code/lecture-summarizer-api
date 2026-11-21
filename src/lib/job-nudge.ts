@@ -3,8 +3,7 @@
  * Safe defaults: probe Blob before clearing capacity holds, advance few jobs per tick,
  * at most one pdf stage, skip busy leases, drop superseded density orphans.
  */
-import { put, del } from "@vercel/blob";
-import { and, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { db, schema } from "@/db";
 import {
   advanceJob,
@@ -16,6 +15,7 @@ import {
   type Artifacts,
 } from "./pipeline";
 import { parseDensity, type Density } from "./providers/types";
+import { deleteFileUrl, isR2ObjectUrl, listR2Objects, saveArtifact, useR2 } from "./storage";
 
 export type NudgeCandidate = {
   id: string;
@@ -41,7 +41,37 @@ export type JobNudgeReport = {
   errors: { id: string; error: string }[];
 };
 
-const BLOB_HOLD_RE = /Blob storage suspended|blob capacity|store has been suspended/i;
+const BLOB_HOLD_RE = /Blob storage suspended|blob capacity|store has been suspended|R2 storage limit/i;
+
+async function verifyR2AudioReady(lectureId: string, artifacts: Artifacts): Promise<{ ready: boolean; reason?: string }> {
+  if (artifacts.asrComplete) return { ready: true };
+  if (!useR2()) return { ready: false, reason: "r2_not_configured" };
+
+  const lecture = await db.query.lectures.findFirst({ where: sql`${schema.lectures.id} = ${lectureId}` });
+  if (!lecture) return { ready: false, reason: "lecture_missing" };
+
+  const segments = await db.select({ url: schema.segments.url })
+    .from(schema.segments)
+    .where(eq(schema.segments.lectureId, lectureId));
+  const urls = segments.map((segment) => segment.url).filter((url): url is string => !!url);
+
+  if (!urls.length && !lecture.audioUrl && !lecture.slidesUrl) {
+    return { ready: false, reason: "no_phone_audio_or_material" };
+  }
+
+  const retainedUrls = [...urls];
+  if (lecture.audioUrl) retainedUrls.push(lecture.audioUrl);
+
+  if (retainedUrls.length && retainedUrls.some((url) => !isR2ObjectUrl(url))) {
+    return { ready: false, reason: "legacy_audio_waiting_for_phone" };
+  }
+
+  const objects = await listR2Objects();
+  const r2Urls = new Set(objects.map((object) => object.url));
+  const missing = retainedUrls.filter((url) => !r2Urls.has(url));
+  if (missing.length) return { ready: false, reason: "r2_audio_missing" };
+  return { ready: true };
+}
 
 export function isBlobHoldArtifacts(a: Artifacts, now = Date.now()): boolean {
   if (a.blobHold) return true;
@@ -117,17 +147,11 @@ export function rankNudgeCandidates(rows: NudgeCandidate[]): NudgeCandidate[] {
 }
 
 export async function probeBlobWritable(): Promise<boolean | null> {
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-  if (!token) return null;
-  const pathname = `artifacts/nudge-probe-${Date.now()}.txt`;
+  if (!useR2()) return null;
+  let url: string | null = null;
   try {
-    const blob = await put(pathname, "ok", {
-      access: "private",
-      token,
-      contentType: "text/plain",
-      addRandomSuffix: true,
-    });
-    await del(blob.url, { token });
+    url = await saveArtifact(`nudge-probe-${Date.now()}.txt`, "ok", "text/plain");
+    await deleteFileUrl(url);
     return true;
   } catch (e) {
     if (isBlobCapacityError(e)) return false;
@@ -161,7 +185,7 @@ export async function runJobNudge(opts: { dryRun?: boolean; forceBlob?: boolean 
   const open = await db
     .select()
     .from(schema.jobs)
-    .where(and(ne(schema.jobs.stage, "done"), ne(schema.jobs.stage, "failed")))
+    .where(ne(schema.jobs.stage, "done"))
     .orderBy(schema.jobs.updatedAt)
     .limit(Math.max(20, Number(process.env.JOB_NUDGE_SCAN || 80)));
 
@@ -199,6 +223,7 @@ export async function runJobNudge(opts: { dryRun?: boolean; forceBlob?: boolean 
     const eligible =
       superseded ||
       stuck ||
+      row.stage === "failed" ||
       holdExpired ||
       (blobHold && blobWritable !== false);
     const c: NudgeCandidate = {
@@ -269,6 +294,13 @@ export async function runJobNudge(opts: { dryRun?: boolean; forceBlob?: boolean 
       continue;
     }
     try {
+      const row = open.find((job) => job.id === c.id);
+      if (!row) continue;
+      const readiness = await verifyR2AudioReady(c.lectureId, parseArtifacts(row.artifacts));
+      if (!readiness.ready) {
+        report.skipped.push({ id: c.id, reason: readiness.reason || "r2_not_ready" });
+        continue;
+      }
       // Clear soft holds / dead leases, then advance one unit.
       if (c.blobHold || c.stuck || (c.holdUntil && c.holdUntil <= now)) {
         const r = await retryJob(c.id, true);

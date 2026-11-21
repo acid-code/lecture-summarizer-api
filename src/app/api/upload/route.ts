@@ -1,35 +1,36 @@
-import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
+import { createPresignedUploadUrl, useR2 } from "@/lib/storage";
 
 /**
- * Token route for Vercel Blob CLIENT uploads. The browser/phone uploads audio + slides directly
- * to Blob, bypassing the 4.5 MB function body limit. Then PATCH /api/lectures/{id} with the URL.
- * The Blob store is private, so clients MUST upload with access "private".
- * Client: `upload(name, file, { access: "private", handleUploadUrl: "/api/upload", multipart: true,
- *          clientPayload: JSON.stringify({ token }) })` from "@vercel/blob/client".
+ * Presigned R2 upload route. The browser/phone PUTs the file directly to R2,
+ * bypassing the 4.5 MB function body limit.
  */
 export async function POST(req: Request) {
-  const body = (await req.json()) as HandleUploadBody;
   try {
-    const result = await handleUpload({
-      body,
-      request: req,
-      onBeforeGenerateToken: async (_pathname, clientPayload) => {
-        // Auth stub: upload-token requests carry the API token in clientPayload.
-        const token = process.env.API_TOKEN;
-        if (token && JSON.parse(clientPayload || "{}").token !== token) throw new Error("unauthorized");
-        return {
-          allowedContentTypes: [
-            "audio/*", "application/pdf",
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-          ],
-          maximumSizeInBytes: 200 * 1024 * 1024, // ~50 min m4a is ~20-80 MB
-          addRandomSuffix: true,
-        };
-      },
-      // Called by Blob after upload (not on localhost without a tunnel).
-      onUploadCompleted: async ({ blob }) => { console.log("upload completed", blob.pathname); },
+    if (!useR2()) return Response.json({ error: "R2 storage is not configured" }, { status: 503 });
+    const body = await req.json();
+    const filename = typeof body.filename === "string" ? body.filename : "";
+    const contentType = typeof body.contentType === "string"
+      ? body.contentType
+      : typeof body.content_type === "string" ? body.content_type : "";
+    const size = typeof body.size === "number" ? body.size : 0;
+    const token = process.env.API_TOKEN;
+    if (token) {
+      const payload = typeof body.clientPayload === "string" ? JSON.parse(body.clientPayload || "{}") : body;
+      if (payload.token !== token) throw new Error("unauthorized");
+    }
+    if (!filename || !contentType) throw new Error("filename and contentType are required");
+    if (!/^(audio\/|application\/pdf$|application\/vnd\.openxmlformats-officedocument\.presentationml\.presentation$)/.test(contentType)) {
+      throw new Error("content type not allowed");
+    }
+    const upload = await createPresignedUploadUrl("uploads", filename, contentType, 60 * 60, size);
+    return Response.json({
+      mode: "r2",
+      method: "PUT",
+      put_url: upload.url,
+      url: `https://${process.env.R2_BUCKET_NAME}.${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${upload.key}`,
+      headers: { "content-type": contentType },
+      expires_at: upload.expiresAt,
     });
-    return Response.json(result);
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 400 });
   }

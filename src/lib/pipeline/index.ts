@@ -502,7 +502,7 @@ export async function advanceJob(jobId: string) {
         .where(eq(schema.jobs.id, jobId)).returning();
       return row;
     }
-    // Hobby Blob suspend/quota: keep the job at pdf/summary instead of Failed — cron nudge resumes when writable.
+    // Legacy Vercel Blob suspend/quota: keep the job at its current stage while R2 migration or retry nudge resumes.
     if (isBlobCapacityError(e)) {
       const wait = Number(process.env.BLOB_HOLD_MS || 30 * 60_000);
       a.holdUntil = Date.now() + wait;
@@ -541,7 +541,7 @@ function shortErr(e: unknown): string {
 export function isBlobCapacityError(e: unknown): boolean {
   const m = (e as Error)?.message ?? String(e);
   return /Vercel Blob:.*(quota exceeded|store has been suspended|Storage quota)/i.test(m)
-    || /blob.*suspended|storage quota exceeded/i.test(m);
+    || /blob.*suspended|storage quota exceeded|R2 storage limit/i.test(m);
 }
 
 /** Hierarchical summary for long lectures: SUMMARY_HIERARCHICAL=auto (default; ASR span ≥ SUMMARY_HIER_MIN_MINUTES, default 65) | on | off. */
