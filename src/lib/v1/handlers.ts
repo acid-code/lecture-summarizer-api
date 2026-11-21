@@ -15,7 +15,7 @@ import { bad, id, notFound } from "../http";
 import { dedupeTranscript } from "../providers/dedupe";
 import { getProvider } from "../providers";
 import { deleteFileUrl } from "../storage";
-import { materialsText, advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, resumeStage, jobDensity, retryJob, cancelJob, RUN_LEASE_MS, STUCK_MS, type Artifacts } from "../pipeline";
+import { materialsText, advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, resumeStage, jobDensity, retryJob, cancelJob, retryWaitingJobs, shouldAutoAdvanceJob, RUN_LEASE_MS, STUCK_MS, type Artifacts } from "../pipeline";
 import { createPresignedUploadUrl, isAcceptableUploadUrl, readFileUrl, saveFile, useR2 } from "../storage";
 import { captionsUsable, normalizeSegments, parseSrt, type ImportSegment } from "../transcript-import";
 import { cleanHebrew, stripNiqqud } from "../providers/prompts";
@@ -205,6 +205,7 @@ export async function uploadSlides(req: Request, lid: string) {
   const all = await db.select().from(schema.lectureFiles).where(eq(schema.lectureFiles.lectureId, lid)).orderBy(schema.lectureFiles.createdAt);
   const combined = combineDeckText(all);
   await db.update(schema.lectures).set({ slidesUrl: all[0]?.url ?? url, slidesText: combined }).where(eq(schema.lectures.id, lid));
+  await retryWaitingJobs(lid);
   return j({ ok: true, slides_text_chars: slidesText?.length ?? 0, files: all.length,slide_range:range });
 }
 
@@ -253,6 +254,8 @@ export async function uploadContext(req: Request, courseId: string) {
   await db.insert(schema.courseFiles).values({ id: id(), courseId, name, mime: mime || (pptx ? "application/vnd.openxmlformats-officedocument.presentationml.presentation" : "application/pdf"),
     url, text, size: data.length, createdAt: Date.now() });
   const all = await syncCourseContext(courseId);
+  const lectures = await db.select({ id: schema.lectures.id }).from(schema.lectures).where(eq(schema.lectures.courseId, courseId));
+  await Promise.all(lectures.map((lecture) => retryWaitingJobs(lecture.id)));
   return j({ ok: true, course_id: courseId, pages: text.split("\f").length, chars: text.length, files: all.length, max_files: MAX_COURSE_FILES });
 }
 
@@ -297,6 +300,7 @@ export async function uploadSegment(req: Request, lid: string) {
   // Idempotent per (lecture, seq): a retried upload replaces the previous row.
   await db.delete(schema.segments).where(and(eq(schema.segments.lectureId, lid), eq(schema.segments.seq, seq)));
   await db.insert(schema.segments).values({ id: id(), lectureId: lid, seq, startedAt: (get("started_at") as string) ?? null, duration, url, mime, createdAt: Date.now() });
+  await retryWaitingJobs(lid);
   return j({ ok: true, seq }, 201);
 }
 
@@ -404,7 +408,7 @@ function jobView(job: typeof schema.jobs.$inferSelect) {
 export async function getJob(jid: string, advance: boolean) {
   let job = await db.query.jobs.findFirst({ where: eq(schema.jobs.id, jid) });
   if (!job) return notFound();
-  if (advance && job.stage !== "done" && job.stage !== "failed") job = await advanceJob(jid);
+  if (advance && shouldAutoAdvanceJob(job.stage, job.error)) job = await advanceJob(jid);
   return j(jobView(job));
 }
 
