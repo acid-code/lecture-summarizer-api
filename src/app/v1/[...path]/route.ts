@@ -14,7 +14,7 @@ async function route(req: Request, { params }: Ctx) {
     return Response.json({ ok: true, provider: getProvider().name, storage: process.env.R2_BUCKET_NAME ? "r2" : "local", commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null, figures: process.env.FIGURES ?? "on" });
 
   // Admin ops before device auth. Cron: Bearer CRON_SECRET (or x-vercel-cron when unset). Manual: POST + API_TOKEN.
-  if (p[0] === "admin" && (p[1] === "blob-gc" || p[1] === "job-nudge") && !p[2] && (m === "POST" || m === "GET")) {
+  if (p[0] === "admin" && (p[1] === "blob-gc" || p[1] === "job-nudge" || p[1] === "job-fail") && !p[2] && (m === "POST" || m === "GET")) {
     const authz = req.headers.get("authorization") ?? "";
     const cronSecret = process.env.CRON_SECRET;
     const cronOk = (cronSecret && authz === `Bearer ${cronSecret}`)
@@ -31,11 +31,24 @@ async function route(req: Request, { params }: Ctx) {
       const gc = await runBlobGc({ dryRun: dry, orphans: true });
       // After reclaiming quota, immediately unstick soft-held jobs (Hobby allows only daily crons).
       const { runJobNudge } = await import("@/lib/job-nudge");
-      const nudge = await runJobNudge({ dryRun: dry });
+      const max = Math.max(1, Math.min(45, Number(new URL(req.url).searchParams.get("max") || 12) || 12));
+      const failMissing = new URL(req.url).searchParams.get("fail_missing") === "1";
+      const nudge = await runJobNudge({ dryRun: dry, maxAdvance: max, failMissing });
       return Response.json({ ...gc, nudge });
     }
+    if (p[1] === "job-fail") {
+      if (m !== "POST") return Response.json({ error: "method_not_allowed" }, { status: 405 });
+      let body: { job_ids?: string[]; all?: boolean } = {};
+      try { body = await req.json(); } catch { body = {}; }
+      const ids = Array.isArray(body.job_ids) ? [...new Set(body.job_ids)].slice(0, 500) : [];
+      if (!body.all && !ids.length) return Response.json({ error: "job_ids or all required" }, { status: 400 });
+      const { failJobs } = await import("@/lib/v1/handlers");
+      return Response.json(await failJobs(ids, body.all === true));
+    }
     const { runJobNudge } = await import("@/lib/job-nudge");
-    return Response.json(await runJobNudge({ dryRun: dry }));
+    const max = Math.max(1, Math.min(45, Number(new URL(req.url).searchParams.get("max") || 12) || 12));
+    const failMissing = new URL(req.url).searchParams.get("fail_missing") === "1";
+    return Response.json(await runJobNudge({ dryRun: dry, maxAdvance: max, failMissing }));
   }
 
   const auth = authenticate(req); if (auth instanceof Response) return auth;
@@ -77,6 +90,8 @@ async function route(req: Request, { params }: Ctx) {
     if (a === "lectures" && !b && m === "POST") return h.createLecture(req, dev);
     if (a === "lectures" && b) {
       if (!c && m === "GET") return h.getLecture(b);
+      if (c === "jobs" && d === "cancel-all" && m === "POST") return h.cancelAllLectureJobs(b);
+      if (c === "jobs" && d === "advance-all" && m === "POST") return h.advanceAllLectureJobs(b);
       if (c === "move" && !d && m === "POST") return h.moveLecture(req,b,dev);
       if(c==="tutor"&&!d&&m==="POST"){const {tutorHandler}=await import("@/lib/study/handler");return tutorHandler(req,b,dev);}
       if (!c && m === "DELETE") return h.deleteLecture(b);
