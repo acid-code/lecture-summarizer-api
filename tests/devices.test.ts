@@ -70,6 +70,20 @@ test("legacy course: usable by old client, claimed only by a device that names i
   assert.deepEqual((await call("POST", "devices/claim", A, { claim_course_ids: [cid] })).body.claimed, [cid]); // idempotent
 });
 
+test("exam endpoints are owner-scoped and return the Android contract", async () => {
+  const c = await call("POST", "courses", A, { name: "Exam course" });
+  const cid = c.body.course_id;
+  assert.equal((await call("GET", `courses/${cid}/exam`, B)).status, 404);
+  const status = await call("GET", `courses/${cid}/exam`, A);
+  assert.equal(status.status, 200);
+  assert.deepEqual(status.body.sources, []);
+  assert.equal(status.body.ready, false);
+  assert.equal(status.body.missing_detailed, 0);
+  assert.equal((await call("POST", `courses/${cid}/exam`, A, { force: true })).status, 200);
+  assert.equal((await call("GET", `courses/${cid}/exam.pdf`, A)).status, 404);
+  assert.equal((await call("GET", `courses/${cid}/exam.json`, A)).status, 404);
+});
+
 test("jobs scoped: B cannot get/retry/delete A's job, list empty", async () => {
   const c = await call("POST", "courses", A, { name: "J" });
   const l = await call("POST", "lectures", A, { course_id: c.body.course_id, title: "x" });
