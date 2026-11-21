@@ -286,6 +286,25 @@ export async function cancelJob(jobId: string): Promise<RetryResult> {
   return { ok: true, job: row };
 }
 
+export function shouldAutoAdvanceJob(stage: string, error: string | null): boolean {
+  if (stage === "done" || stage === "cancelled") return false;
+  if (stage === "failed") return error !== "cancelled_by_user";
+  return true;
+}
+
+export async function retryWaitingJobs(lectureId: string): Promise<{ retried: string[] }> {
+  await ensureDb();
+  const jobs = await db.select().from(schema.jobs)
+    .where(and(eq(schema.jobs.lectureId, lectureId), ne(schema.jobs.stage, "done")));
+  const retried: string[] = [];
+  for (const job of jobs) {
+    if (job.stage !== "failed" || job.error === "cancelled_by_user") continue;
+    const r = await retryJob(job.id, true);
+    if (r.ok) retried.push(job.id);
+  }
+  return { retried };
+}
+
 /**
  * Runs exactly ONE unit of work per call so each invocation fits the Vercel Hobby 300s limit.
  * ASR runs up to ASR_PARALLEL windows/segments per call in parallel (stays in "asr" until all segments are transcribed).
@@ -298,6 +317,7 @@ export async function advanceJob(jobId: string) {
   const job = await db.query.jobs.findFirst({ where: eq(schema.jobs.id, jobId) });
   if (!job) throw new Error("job not found");
   if (job.stage === "done") return job;
+  if (job.stage === "failed" && job.error === "cancelled_by_user") return job;
   const lecture = (await db.query.lectures.findFirst({ where: eq(schema.lectures.id, job.lectureId) }))!;
   const course = await db.query.courses.findFirst({ where: eq(schema.courses.id, lecture.courseId) });
   const ctx: LectureContext = {

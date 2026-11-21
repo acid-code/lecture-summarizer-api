@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { normalizeScripts, bidi, flipArrows, mergedGlossary, renderStudyHtml } from "../src/lib/pipeline/render";
-import { stageRunDecision, verifiedLectureLabel, RUN_LEASE_MS, MAX_STAGE_RUNS } from "../src/lib/pipeline";
+import { stageRunDecision, shouldAutoAdvanceJob, verifiedLectureLabel, RUN_LEASE_MS, MAX_STAGE_RUNS } from "../src/lib/pipeline";
 
 test("powers/subscripts keep the whole exponent raised", () => {
   assert.equal(normalizeScripts("2^10"), "2^{10}");
@@ -49,4 +49,12 @@ test("stall guard: busy within lease, re-run after, fail after max, reset on ret
   assert.deepEqual(stageRunDecision({ ...run, n: MAX_STAGE_RUNS }, "pdf", now, now + RUN_LEASE_MS + 1), { action: "fail", runs: MAX_STAGE_RUNS });
   assert.deepEqual(stageRunDecision({ ...run, n: MAX_STAGE_RUNS }, "pdf", now + 5, now + RUN_LEASE_MS + 1), { action: "run", n: 1 }); // retried
   assert.deepEqual(stageRunDecision(run, "summary", now, now + 1), { action: "run", n: 1 });
+});
+
+test("failed jobs auto-retry except explicit user cancellation", () => {
+  assert.equal(shouldAutoAdvanceJob("failed", "Gemini busy"), true);
+  assert.equal(shouldAutoAdvanceJob("failed", null), true);
+  assert.equal(shouldAutoAdvanceJob("failed", "cancelled_by_user"), false);
+  assert.equal(shouldAutoAdvanceJob("done", null), false);
+  assert.equal(shouldAutoAdvanceJob("asr", null), true);
 });

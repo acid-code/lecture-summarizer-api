@@ -8,6 +8,9 @@ export const courses = sqliteTable("courses", {
   contextPdfUrl: text("context_pdf_url"),
   /** Extracted plain text of the context PDF, page-delimited by \f. Excerpts are retrieved per prompt. */
   contextText: text("context_text"),
+  examPdfUrl: text("exam_pdf_url"),
+  examJsonUrl: text("exam_json_url"),
+  examFingerprint: text("exam_fingerprint"),
   createdAt: integer("created_at").notNull(),
   /** Owning install (X-Device-Id). NULL = legacy, unclaimed (claimable via POST /v1/devices/claim). */
   deviceId: text("device_id"),

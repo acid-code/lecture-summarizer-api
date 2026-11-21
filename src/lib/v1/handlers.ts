@@ -15,10 +15,14 @@ import { bad, id, notFound } from "../http";
 import { dedupeTranscript } from "../providers/dedupe";
 import { getProvider } from "../providers";
 import { deleteFileUrl } from "../storage";
-import { materialsText, advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, resumeStage, jobDensity, retryJob, cancelJob, RUN_LEASE_MS, STUCK_MS, type Artifacts } from "../pipeline";
+import { materialsText, advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, resumeStage, jobDensity, retryJob, cancelJob, retryWaitingJobs, shouldAutoAdvanceJob, RUN_LEASE_MS, STUCK_MS, type Artifacts } from "../pipeline";
 import { createPresignedUploadUrl, isAcceptableUploadUrl, readFileUrl, saveFile, useR2 } from "../storage";
 import { captionsUsable, normalizeSegments, parseSrt, type ImportSegment } from "../transcript-import";
 import { cleanHebrew, stripNiqqud } from "../providers/prompts";
+import { memoryPairs } from "../study/memory";
+import { htmlToPdf } from "../pdf";
+import { renderStudyHtml } from "../pipeline/render";
+import { createHash } from "node:crypto";
 
 const j = (b: unknown, status = 200) => Response.json(b, { status });
 
@@ -205,6 +209,7 @@ export async function uploadSlides(req: Request, lid: string) {
   const all = await db.select().from(schema.lectureFiles).where(eq(schema.lectureFiles.lectureId, lid)).orderBy(schema.lectureFiles.createdAt);
   const combined = combineDeckText(all);
   await db.update(schema.lectures).set({ slidesUrl: all[0]?.url ?? url, slidesText: combined }).where(eq(schema.lectures.id, lid));
+  await retryWaitingJobs(lid);
   return j({ ok: true, slides_text_chars: slidesText?.length ?? 0, files: all.length,slide_range:range });
 }
 
@@ -253,6 +258,8 @@ export async function uploadContext(req: Request, courseId: string) {
   await db.insert(schema.courseFiles).values({ id: id(), courseId, name, mime: mime || (pptx ? "application/vnd.openxmlformats-officedocument.presentationml.presentation" : "application/pdf"),
     url, text, size: data.length, createdAt: Date.now() });
   const all = await syncCourseContext(courseId);
+  const lectures = await db.select({ id: schema.lectures.id }).from(schema.lectures).where(eq(schema.lectures.courseId, courseId));
+  await Promise.all(lectures.map((lecture) => retryWaitingJobs(lecture.id)));
   return j({ ok: true, course_id: courseId, pages: text.split("\f").length, chars: text.length, files: all.length, max_files: MAX_COURSE_FILES });
 }
 
@@ -297,6 +304,7 @@ export async function uploadSegment(req: Request, lid: string) {
   // Idempotent per (lecture, seq): a retried upload replaces the previous row.
   await db.delete(schema.segments).where(and(eq(schema.segments.lectureId, lid), eq(schema.segments.seq, seq)));
   await db.insert(schema.segments).values({ id: id(), lectureId: lid, seq, startedAt: (get("started_at") as string) ?? null, duration, url, mime, createdAt: Date.now() });
+  await retryWaitingJobs(lid);
   return j({ ok: true, seq }, 201);
 }
 
@@ -404,7 +412,7 @@ function jobView(job: typeof schema.jobs.$inferSelect) {
 export async function getJob(jid: string, advance: boolean) {
   let job = await db.query.jobs.findFirst({ where: eq(schema.jobs.id, jid) });
   if (!job) return notFound();
-  if (advance && job.stage !== "done" && job.stage !== "failed") job = await advanceJob(jid);
+  if (advance && shouldAutoAdvanceJob(job.stage, job.error)) job = await advanceJob(jid);
   return j(jobView(job));
 }
 
@@ -501,6 +509,111 @@ export async function listSummaries(lid: string) {
   return j({ lecture_id: lid, densities: out });
 }
 
+type ExamSourceRow = { lecture_id: string; title: string; kind: string; density: Density; job_id: string; summary: Artifacts["summary"] };
+
+async function examSources(courseId: string, excluded: string[] = []): Promise<ExamSourceRow[]> {
+  const lectures = await db.select().from(schema.lectures).where(eq(schema.lectures.courseId, courseId)).orderBy(schema.lectures.createdAt);
+  const excludedSet = new Set(excluded);
+  const out: ExamSourceRow[] = [];
+  for (const lecture of lectures) {
+    if (excludedSet.has(lecture.id)) continue;
+    const jobs = (await db.select().from(schema.jobs).where(and(eq(schema.jobs.lectureId, lecture.id), eq(schema.jobs.stage, "done"))))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    let selected: typeof jobs[number] | undefined;
+    let density: Density = "detailed";
+    for (const candidateDensity of ["detailed", "standard", "compact"] as const) {
+      selected = jobs.find((job) => jobDensity(JSON.parse(job.artifacts)) === candidateDensity);
+      if (selected) { density = candidateDensity; break; }
+    }
+    if (!selected) continue;
+    const artifacts = JSON.parse(selected.artifacts) as Artifacts;
+    if (!artifacts.summary) continue;
+    const title = lecture.title.toLowerCase();
+    const kind = /(תרגול|recitation|exercise|tutorial)/i.test(title) ? "recitation" : "lecture";
+    out.push({ lecture_id: lecture.id, title: lecture.title, kind, density, job_id: selected.id, summary: artifacts.summary });
+  }
+  return out;
+}
+
+async function examFingerprint(courseId: string, excluded: string[] = []) {
+  const sources = await examSources(courseId, excluded);
+  const payload = JSON.stringify({ courseId, excluded: [...excluded].sort(), sources: sources.map((s) => [s.lecture_id, s.job_id, s.density]) });
+  return createHash("sha256").update(payload).digest("hex").slice(0, 32);
+}
+
+export async function examStatus(courseId: string) {
+  const course = await db.query.courses.findFirst({ where: eq(schema.courses.id, courseId) });
+  if (!course) return notFound();
+  const sources = await examSources(courseId);
+  const fingerprint = await examFingerprint(courseId);
+  const missingDetailed = sources.filter((source) => source.density !== "detailed").length;
+  const ready = !!course.examPdfUrl;
+  const stale = !!course.examFingerprint && course.examFingerprint !== fingerprint;
+  return j({
+    sources: sources.map(({ lecture_id, title, kind, density, job_id }) => ({ lecture_id, title, kind, density, job_id })),
+    ready,
+    stale,
+    fingerprint: course.examFingerprint ?? null,
+    missing_detailed: missingDetailed,
+  });
+}
+
+export async function examBuild(req: Request, courseId: string) {
+  const course = await db.query.courses.findFirst({ where: eq(schema.courses.id, courseId) });
+  if (!course) return notFound();
+  const parsed = z.object({
+    force: z.boolean().optional().default(false),
+    exclude_lecture_ids: z.array(z.string()).max(500).optional().default([]),
+  }).safeParse(await req.json().catch(() => ({})));
+  if (!parsed.success) return bad(parsed.error.message);
+  const excluded = [...new Set(parsed.data.exclude_lecture_ids)];
+  const sources = await examSources(courseId, excluded);
+  if (!sources.length) return j({ fingerprint: null, reused: false, missing_detailed: 0 });
+  const fingerprint = await examFingerprint(courseId, excluded);
+  const missingDetailed = sources.filter((source) => source.density !== "detailed").length;
+  if (!parsed.data.force && course.examFingerprint === fingerprint && course.examPdfUrl && course.examJsonUrl) {
+    return j({ fingerprint, reused: true, missing_detailed: missingDetailed });
+  }
+
+  const memoryPairsPayload = sources.flatMap((source) => memoryPairs(source.summary)).filter((pair, index, all) =>
+    all.findIndex((candidate) => candidate.term.normalize("NFKC").toLowerCase() === pair.term.normalize("NFKC").toLowerCase()) === index
+  ).slice(0, 200);
+  const pack = { course_id: courseId, fingerprint, sources: sources.map(({ lecture_id, title, kind, density, job_id }) => ({ lecture_id, title, kind, density, job_id })), memory_pairs: memoryPairsPayload };
+  const examJsonUrl = await saveFile("artifacts", `${courseId}-exam.json`, JSON.stringify(pack), "application/json");
+
+  const parts = sources.map((source) => {
+    const html = renderStudyHtml(source.summary as any, [], { course: course.name, lecture: source.title, level: source.density });
+    const style = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? "";
+    const main = html.match(/<main>([\s\S]*?)<\/main>/)?.[1] ?? "";
+    return { style, main };
+  });
+  const css = parts.map((part) => part.style)[0] ?? "";
+  const mains = parts.map((part, index) => `<div${index ? ' style="page-break-before:always"' : ""}><main>${part.main}</main></div>`).join("");
+  const examHtml = `<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>${course.name} - Exam pack</title><style>${css}</style></head><body><div class="bar"></div><header><h1>${course.name}</h1><div class="meta"><span class="chip lvl">חבילת חזרה למבחן</span></div></header>${mains}</body></html>`;
+  const pdf = await htmlToPdf(examHtml);
+  if (!pdf) {
+    await deleteFileUrl(examJsonUrl).catch(() => {});
+    return j({ error: "PDF renderer unavailable on this deployment" }, 501);
+  }
+  const examPdfUrl = await saveFile("artifacts", `${courseId}-exam.pdf`, pdf, "application/pdf");
+  await db.update(schema.courses).set({ examPdfUrl, examJsonUrl, examFingerprint: fingerprint }).where(eq(schema.courses.id, courseId));
+  return j({ fingerprint, reused: false, missing_detailed: missingDetailed });
+}
+
+export async function examPdf(courseId: string) {
+  const course = await db.query.courses.findFirst({ where: eq(schema.courses.id, courseId) });
+  if (!course?.examPdfUrl) return notFound();
+  const { data } = await readFileUrl(course.examPdfUrl);
+  return new Response(new Uint8Array(data), { headers: { "content-type": "application/pdf", "content-disposition": "inline; filename*=UTF-8''exam-pack.pdf" } });
+}
+
+export async function examJson(courseId: string) {
+  const course = await db.query.courses.findFirst({ where: eq(schema.courses.id, courseId) });
+  if (!course?.examJsonUrl) return notFound();
+  const { data } = await readFileUrl(course.examJsonUrl);
+  return new Response(new Uint8Array(data), { headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
+}
+
 export async function summaryFile(lid: string, kind: "pdf" | "html" | "json", density?: Density) {
   const job = await latestDone(lid, density); if (!job) return j({ error: density ? `no finished ${density} summary` : "no finished job" }, 404);
   const a = JSON.parse(job.artifacts) as Artifacts;
@@ -556,6 +669,8 @@ export async function deleteCourse(cid: string) {
   const files = await db.select().from(schema.courseFiles).where(eq(schema.courseFiles.courseId, cid));
   const urls = new Set<string>(files.map((f) => f.url));
   if (c.contextPdfUrl) urls.add(c.contextPdfUrl);
+  if (c.examPdfUrl) urls.add(c.examPdfUrl);
+  if (c.examJsonUrl) urls.add(c.examJsonUrl);
   let blobErrors = 0;
   await Promise.all([...urls].map((u) => deleteFileUrl(u).catch((e) => { blobErrors++; console.warn("blob delete failed", u, e?.message); })));
   await db.delete(schema.courseFiles).where(eq(schema.courseFiles.courseId, cid));

@@ -62,6 +62,12 @@ async function route(req: Request, { params }: Ctx) {
     if (a === "courses" && !b) return m === "POST" ? h.createCourse(req, dev) : h.listCourses(dev);
     if (a === "courses" && b && !c && m === "DELETE") return h.deleteCourse(b);
     if (a === "courses" && b && c === "context" && m === "POST") return h.uploadContext(req, b);
+    if (a === "courses" && b && c === "exam" && !d) {
+      if (m === "GET") return h.examStatus(b);
+      if (m === "POST") return h.examBuild(req, b);
+    }
+    if (a === "courses" && b && c === "exam.pdf" && !d && m === "GET") return h.examPdf(b);
+    if (a === "courses" && b && c === "exam.json" && !d && m === "GET") return h.examJson(b);
     if (a === "courses" && b && c === "files") {
       if (m === "GET" && !d) return h.listCourseFiles(b);
       if (m === "GET" && d) return h.getCourseFile(b, d);

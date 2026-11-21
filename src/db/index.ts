@@ -62,6 +62,16 @@ export function ensureDb() {
       try { await client.execute(`ALTER TABLE courses ADD COLUMN device_id TEXT`); }
       catch (e) { if (!/duplicate column/i.test((e as Error).message)) throw e; }
     }
+    for (const [name, type] of [
+      ["exam_pdf_url", "TEXT"],
+      ["exam_json_url", "TEXT"],
+      ["exam_fingerprint", "TEXT"],
+    ] as const) {
+      if (!cols.rows.some((r) => r.name === name)) {
+        try { await client.execute(`ALTER TABLE courses ADD COLUMN ${name} ${type}`); }
+        catch (e) { if (!/duplicate column/i.test((e as Error).message)) throw e; }
+      }
+    }
     await client.execute(`CREATE INDEX IF NOT EXISTS courses_device ON courses(device_id)`);
   })();
   ready.catch(() => { ready = null; });
