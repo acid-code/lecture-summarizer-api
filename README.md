@@ -17,7 +17,8 @@ phone/web ──(Vercel Blob client upload, multipart)──► Blob  (audio, sl
 ```
 
 - **Never** run Whisper, WeasyPrint, or the native Typst CLI in Vercel functions (no GPU, native deps, 300 s Hobby limit).
-- Function request body limit is **4.5 MB** → audio/slides go straight to Blob via `/api/upload` (client uploads). A ~50 min m4a is ~20–80 MB (verify).
+- Function request body limit is **4.5 MB** → large audio/slides stream directly to R2 via a presigned upload. A ~50 min m4a is ~20–80 MB (verify).
+- R2 usage is capped at **7 GiB (7,516,192,768 bytes)** in application code. Upload plans and server-side writes are rejected once the existing objects plus the incoming body would exceed the ceiling.
 - Each `POST /api/jobs/{id}/advance` runs **one stage** (`maxDuration = 300`, the Hobby max). Call it until `stage === "done"` (client polling now; Vercel Cron/Queues/Workflows later).
 - Stages are idempotent; artifacts are saved per stage on the job, so a `failed` job resumes from the first missing stage.
 - AI is behind `AiProvider` (`src/lib/providers`): **Gemini** when `GEMINI_API_KEY` or `GEMINI_API_KEYS` is set, otherwise a **mock** (lets you run everything without a key). Swap in ivrit-ai Whisper etc. later via a new provider.
@@ -89,11 +90,11 @@ Implemented in `src/app/v1/[...path]/route.ts` → `src/lib/v1/handlers.ts`. Mat
 
 | Method | Path | Body | Response | Android |
 |---|---|---|---|---|
-| GET | `/v1/health` | – | `{ok,provider,blob}` | – |
+| GET | `/v1/health` | – | `{ok,provider,storage}` | – |
 | POST | `/v1/courses` | `{name, lang_primary}` | `{course_id}` | createCourse ✓ |
 | GET | `/v1/courses` | – | `[{course_id,name,has_context}]` | – |
 | POST | `/v1/courses/{id}/context` | multipart `file` (PDF) or JSON `{url}` | `{pages,chars}` | – |
-| POST | `/v1/uploads` | JSON `{filename, content_type, size?}` | `{mode:"multipart"}` (no Blob) or `{mode:"blob", method:"PUT", put_url, headers, expires_at}` | large-file uploads |
+| POST | `/v1/uploads` | JSON `{filename, content_type, size?}` | `{mode:"multipart"}` (no object store) or `{mode:"r2", method:"PUT", put_url, url, headers, expires_at}` | large-file uploads |
 | POST | `/v1/lectures` | `{course_id,title,recorded_at}` | `{lecture_id}` | createLecture ✓ |
 | GET | `/v1/lectures/{id}` | – | lecture + segments + jobs | – |
 | POST | `/v1/lectures/{id}/slides` | multipart `file` (PDF/PPTX) or JSON `{url}` | `{slides_text_chars}` | uploadSlides ✓ |
@@ -116,10 +117,9 @@ Legacy `/api/*` routes (web scaffold: `/api/courses`, `/api/jobs/{id}/advance`, 
 - **Course-context pack**: PDF text extracted once (`unpdf`) into `courses.context_text`; each prompt gets top lexical-match ~1.2k-char chunks (≤5–6k chars total, `src/lib/context.ts`), never the whole PDF. Slides stay the primary source. TODO: embeddings.
 - **PDF**: RTL HTML → PDF with headless Chromium via `puppeteer-core` (`src/lib/pdf.ts`). **Local/box**: system Chrome (`CHROME_PATH` or `/usr/bin/{google-chrome,chromium,chromium-browser}`). **Vercel** (`VERCEL`/Lambda env, or force with `PDF_RENDERER=sparticuz`): `@sparticuz/chromium` (brotli pack in `node_modules/@sparticuz/chromium/bin`, unpacked to `/tmp` on cold start, ~+2–4 s; traced into functions via `outputFileTracingIncludes` in `next.config.ts`). The Hebrew font (IBM Plex Sans Hebrew, OFL, `fonts/`) is inlined as `@font-face` so it embeds even with no system fonts. `PDF_RENDERER=html` disables PDF (→ 501, use `summary.html`). typst-wasm (`templates/study.typ`) not used.
 - **Uploads**: two paths, same `/v1` endpoints.
-  - *Local/box (no `BLOB_READ_WRITE_TOKEN`)*: multipart through the function → `data/uploads/`. `POST /v1/uploads` returns `{mode:"multipart"}`.
-  - *Vercel (Blob store connected)*: function bodies are capped at **4.5 MB**, so the client calls `POST /v1/uploads` → gets a 1-hour, single-pathname, content-type-restricted Blob client token as `{put_url, headers}`, PUTs raw bytes to `put_url` with those headers (response JSON has `url`), then sends JSON `{url, ...}` to `/v1/lectures/{id}/audio/segments` (`{seq, started_at, duration, mime, url}`), `/slides` or `/context`. Small multipart still works on Vercel under 4.5 MB.
-  - JSON `{url}` is only accepted for `https://*.blob.vercel-storage.com` or `local:data/uploads/...` (no SSRF / path traversal).
-  - The Android app uses Blob when `/v1/uploads` says `blob` and the file is > 4 MB, else multipart.
+  - *Local/box (R2 not configured)*: multipart through the function → `data/uploads/`. `POST /v1/uploads` returns `{mode:"multipart"}`.
+  - *Vercel (R2 configured)*: function bodies are capped at **4.5 MB**, so the client calls `POST /v1/uploads` and receives a 1-hour presigned R2 `put_url`, streams the file directly to R2 with the returned headers, then sends JSON `{url, ...}` to `/v1/lectures/{id}/audio/segments`, `/slides`, or `/context`. The Android app streams files >4 MB; small multipart uploads remain available.
+  - JSON `{url}` is accepted for the configured R2 bucket, legacy `*.blob.vercel-storage.com` URLs, or `local:data/uploads/...` (no SSRF / path traversal).
 - **Raw audio deletion**: after the PDF stage, segment files are deleted and URLs nulled (`DELETE_RAW_AUDIO=true` default).
 - Gemini **model ladder** (free tier, AI Studio free project, Oct 2026 — verify yours in AI Studio → Rate limits; quota is per project and resets at midnight Pacific):
 

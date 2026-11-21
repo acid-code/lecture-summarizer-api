@@ -16,8 +16,7 @@ import { dedupeTranscript } from "../providers/dedupe";
 import { getProvider } from "../providers";
 import { deleteFileUrl } from "../storage";
 import { materialsText, advanceJob, progressOf, stageLabel, reprocessJob, rerepairJob, resummarizeJob, resumeStage, jobDensity, retryJob, cancelJob, RUN_LEASE_MS, STUCK_MS, type Artifacts } from "../pipeline";
-import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
-import { blobAccess, isAcceptableUploadUrl, readFileUrl, saveFile } from "../storage";
+import { createPresignedUploadUrl, isAcceptableUploadUrl, readFileUrl, saveFile, useR2 } from "../storage";
 import { captionsUsable, normalizeSegments, parseSrt, type ImportSegment } from "../transcript-import";
 import { cleanHebrew, stripNiqqud } from "../providers/prompts";
 
@@ -568,7 +567,7 @@ export { ensureDb };
 
 /**
  * POST /v1/uploads {filename, content_type, size?} → how the client should upload a large file.
- *  - Blob configured (Vercel): {mode:"blob", method:"PUT", put_url, headers} — client PUTs raw bytes there
+ *  - R2 configured: {mode:"r2", method:"PUT", put_url, headers} — client PUTs raw bytes there
  *    (bypasses the 4.5 MB function body limit); response JSON has `url`, which the client then sends as
  *    JSON {url} to the normal /v1 slides|context|segments endpoint.
  *  - No Blob (box/local): {mode:"multipart"} — keep using multipart to the /v1 endpoints.
@@ -576,23 +575,24 @@ export { ensureDb };
 export async function createUpload(req: Request) {
   const p = z.object({ filename: z.string().min(1), content_type: z.string().min(1), size: z.number().optional() }).safeParse(await req.json().catch(() => null));
   if (!p.success) return bad(p.error.message);
-  if (!process.env.BLOB_READ_WRITE_TOKEN) return j({ mode: "multipart" });
+  if (!useR2()) return j({ mode: "multipart" });
   const allowed = ["audio/", "application/pdf", "application/vnd.openxmlformats-officedocument.presentationml.presentation"];
   if (!allowed.some((a) => p.data.content_type.startsWith(a))) return bad("content_type not allowed");
-  const pathname = `uploads/${id()}-${p.data.filename.replace(/[^\w.\-]/g, "_")}`;
-  const token = await generateClientTokenFromReadWriteToken({
-    pathname, maximumSizeInBytes: 200 * 1024 * 1024, allowedContentTypes: [p.data.content_type],
-    validUntil: Date.now() + 60 * 60 * 1000, addRandomSuffix: true,
-  });
-  const apiBase = process.env.VERCEL_BLOB_API_URL || "https://vercel.com/api/blob";
+  const upload = await createPresignedUploadUrl(
+    "uploads",
+    p.data.filename,
+    p.data.content_type,
+    60 * 60,
+    p.data.size ?? 0,
+  );
   return j({
-    mode: "blob", method: "PUT", pathname,
-    put_url: `${apiBase}/?${new URLSearchParams({ pathname })}`,
+    mode: "r2", method: "PUT", pathname: upload.key,
+    put_url: upload.url,
     headers: {
-      authorization: `Bearer ${token}`, "x-api-version": "13", "x-vercel-blob-access": blobAccess(),
-      "x-content-type": p.data.content_type, "x-add-random-suffix": "1",
+      "content-type": p.data.content_type,
     },
-    expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    url: `https://${process.env.R2_BUCKET_NAME}.${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${upload.key}`,
+    expires_at: upload.expiresAt,
   }, 201);
 }
 
