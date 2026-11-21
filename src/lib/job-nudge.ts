@@ -177,7 +177,7 @@ function densityOf(a: Artifacts): Density | null {
   }
 }
 
-export async function runJobNudge(opts: { dryRun?: boolean; forceBlob?: boolean } = {}): Promise<JobNudgeReport> {
+export async function runJobNudge(opts: { dryRun?: boolean; forceBlob?: boolean; maxAdvance?: number } = {}): Promise<JobNudgeReport> {
   const dryRun = !!opts.dryRun;
   const now = Date.now();
   const blobWritable = opts.forceBlob ? true : await probeBlobWritable();
@@ -249,7 +249,10 @@ export async function runJobNudge(opts: { dryRun?: boolean; forceBlob?: boolean 
       : eligible;
 
   const ranked = rankNudgeCandidates(filtered);
-  const { advance, supersede, skip } = pickNudgeBatch(ranked, { now });
+  const { advance, supersede, skip } = pickNudgeBatch(ranked, {
+    now,
+    maxAdvance: opts.maxAdvance,
+  });
 
   const report: JobNudgeReport = {
     dryRun,

@@ -31,11 +31,13 @@ async function route(req: Request, { params }: Ctx) {
       const gc = await runBlobGc({ dryRun: dry, orphans: true });
       // After reclaiming quota, immediately unstick soft-held jobs (Hobby allows only daily crons).
       const { runJobNudge } = await import("@/lib/job-nudge");
-      const nudge = await runJobNudge({ dryRun: dry });
+      const max = Math.max(1, Math.min(45, Number(new URL(req.url).searchParams.get("max") || 12) || 12));
+      const nudge = await runJobNudge({ dryRun: dry, maxAdvance: max });
       return Response.json({ ...gc, nudge });
     }
     const { runJobNudge } = await import("@/lib/job-nudge");
-    return Response.json(await runJobNudge({ dryRun: dry }));
+    const max = Math.max(1, Math.min(45, Number(new URL(req.url).searchParams.get("max") || 12) || 12));
+    return Response.json(await runJobNudge({ dryRun: dry, maxAdvance: max }));
   }
 
   const auth = authenticate(req); if (auth instanceof Response) return auth;
