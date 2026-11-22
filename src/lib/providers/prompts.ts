@@ -1,5 +1,5 @@
 import type { Density } from "./types";
-import type { LectureContext, Repair, Transcript } from "./types";
+import type { LectureContext, LectureSummary, Repair, Transcript } from "./types";
 
 /** Hebrew combining marks: cantillation (U+0591–05AF), niqqud points (U+05B0–05BD, 05BF, 05C1–05C2, 05C4–05C5, 05C7).
  *  Punctuation in the block (maqaf U+05BE, paseq, sof pasuq, nun hafukha) is kept. */
@@ -353,6 +353,26 @@ Return JSON {"title","overview","transcript_thin":boolean,"structure_mode":"topi
 ${BIG_PICTURE}
 Put cites inline at the end of bullets and in each section's "citation".
 ${MATH_RULES}`;
+}
+
+/** Condense an existing detailed summary into standard or compact in one fast call (no raw transcript re-processing). */
+export function deriveSummaryPrompt(source: LectureSummary, target: "compact" | "standard", ctx: LectureContext) {
+  const isCompact = target === "compact";
+  return `Condense the DETAILED Hebrew study summary below into a ${isCompact ? "COMPACT (night-before-exam review sheet)" : "STANDARD (concise study notes)"} summary for "${ctx.title}".
+STRICT RULES:
+- Grounded ONLY in the provided detailed summary — NEVER invent new facts, numbers, formulas, slides, or timestamps.
+- Preserve the lecture's topic order and every [t=...] / [slide N] citation that belongs to kept points.
+- Preserve "structure_mode" (${JSON.stringify(source.structure_mode ?? "topics")}) and section "kind" when present.
+- ${isCompact
+    ? `COMPACT target: keep only the essentials — definitions, core theorems/rules, key formulas, procedures, and exam hints. Each bullet must be ONE short dense line. Aim for 3-5 bullets per section (merge minor sub-sections if needed), 2-4 sentence overview, 5-15 glossary terms, 6-12 memory_pairs. Keep important_notes to 1-3 short lines where present.`
+    : `STANDARD target: real study notes — what a student needs to understand and solve problems, without verbose retelling. Each bullet is 1-2 dense sentences. Aim for 4-7 bullets per section, 3-5 sentence overview, 8-20 glossary terms, 8-16 memory_pairs. Preserve important_notes (solving tips/traps/exam hints).`}
+- Keep Hebrew RTL prose with English technical terms inline. ${NO_NIQQUD}
+- Preserve "transcript_thin": ${!!source.transcript_thin}.
+Return JSON {"title","overview","transcript_thin":boolean,"structure_mode":"topics"|"questions","sections":[{"heading","kind":"question"?,"bullets":[],"important_notes":[]?,"citation"}],"glossary":[{"term","explanation"}],"memory_pairs":[{"term","definition"}],"big_picture":{"intent","themes":[{"title","explanation"}],"missed_terms":[{"term","explanation"}]}}.
+${MATH_RULES}
+
+DETAILED SOURCE SUMMARY (JSON):
+${JSON.stringify(source)}`;
 }
 
 /** True for drill/question sections (explicit kind or Hebrew/English question heading). */

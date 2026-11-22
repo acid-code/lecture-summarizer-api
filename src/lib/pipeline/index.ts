@@ -19,7 +19,7 @@ import { readFileUrl } from "../storage";
 
 export interface Artifacts {
   asr?: Transcript; /** ASR before dedupe (append-only), so later dedupe changes can be re-applied from it */ asrRaw?: Transcript; asrParts?: number; /** next ASR window start (s) inside the current part */ asrWindowStart?: number; asrComplete?: boolean; /** ASR ended well before the uploaded audio (e.g. parts whose blobs expired) */ asrIncomplete?: boolean; asrCheck?: ReturnType<typeof asrCompleteness>; coverage?: Coverage | null; coverageBefore?: Coverage | null; repair?: Repair[]; repaired?: Transcript;
-  summary?: LectureSummary; /** resumable hierarchical-summary state (long lectures) */ hier?: HierState; hierFailed?: string; summaryMode?: "hierarchical" | "single"; /** figures embedded in the PDF (metadata only) */ figures?: { page: number; deck?: string; section: number; caption: string }[]; figuresNote?: string; html?: string; pdf?: string; audioDeleted?: boolean;
+  summary?: LectureSummary; /** Optional finished detailed summary to condense from when building compact/standard. */ sourceSummary?: LectureSummary; /** resumable hierarchical-summary state (long lectures) */ hier?: HierState; hierFailed?: string; summaryMode?: "hierarchical" | "single" | "derived"; /** figures embedded in the PDF (metadata only) */ figures?: { page: number; deck?: string; section: number; caption: string }[]; figuresNote?: string; html?: string; pdf?: string; audioDeleted?: boolean;
   /** No audio on the server: summary built from lecture slides/PDFs (or course files) only; ASR+repair skipped. */
   slidesOnly?: boolean;
   /** Job options from /process or resummarize. density = summary level; densities = extra levels to spawn after done. */
@@ -133,15 +133,60 @@ export function jobDensity(a: Artifacts): Density {
   return parseDensity(a.options?.density) ?? (a.summary && !a.options?.density ? "detailed" : "standard");
 }
 
-/** New job for the same lecture at `density`, starting from the done job's ASR+repair (summary/pdf cleared). */
-async function cloneForDensity(lectureId: string, src: Artifacts, density: Density) {
+/** Newest finished detailed summary for a lecture (source for compact/standard derivation). */
+async function latestDetailedSummary(lectureId: string): Promise<LectureSummary | null> {
+  const rows = await db.select().from(schema.jobs)
+    .where(and(eq(schema.jobs.lectureId, lectureId), eq(schema.jobs.stage, "done")));
+  rows.sort((x, y) => y.updatedAt - x.updatedAt);
+  for (const r of rows) {
+    const art = JSON.parse(r.artifacts) as Artifacts;
+    if (jobDensity(art) === "detailed" && art.summary?.sections?.length) return art.summary;
+  }
+  return null;
+}
+
+/** New job for the same lecture at `density`, starting from the done job's ASR+repair (and optional detailed summary). */
+async function cloneForDensity(lectureId: string, src: Artifacts, density: Density, sourceSummary?: LectureSummary | null) {
+  // Reuse an already-active sibling of the same density instead of creating duplicate orphans.
+  const open = await db.select().from(schema.jobs).where(and(eq(schema.jobs.lectureId, lectureId), ne(schema.jobs.stage, "done")));
+  const existing = open.find((r) => r.stage !== "failed" && jobDensity(JSON.parse(r.artifacts) as Artifacts) === density);
+  if (existing) return existing;
+
   const a: Artifacts = JSON.parse(JSON.stringify(src));
-  delete a.summary; delete a.html; delete a.pdf; delete a.hier; delete a.hierFailed; delete a.figures; delete a.coverage; delete a.coverageBefore;
+  delete a.summary; delete a.sourceSummary; delete a.html; delete a.pdf; delete a.hier; delete a.hierFailed; delete a.figures; delete a.coverage; delete a.coverageBefore; delete a.run; delete a.holdUntil; delete a.overloadHolds; delete a.blobHold;
+  if (density !== "detailed" && sourceSummary?.sections?.length) a.sourceSummary = sourceSummary;
   a.options = { ...(a.options ?? {}), density, densities: undefined, live: false };
   const stage = resumeStage(a); a.progressDetail = { stage, label: stageLabel(stage) };
   const job_id = crypto.randomUUID();
   const [row] = await db.insert(schema.jobs).values({ id: job_id, lectureId, stage, artifacts: JSON.stringify(a), updatedAt: Date.now() }).returning();
   return row;
+}
+
+/** Spawn remaining sibling densities from options.densities (deduped). Never throws. */
+async function spawnExtraDensities(
+  lectureId: string,
+  a: Artifacts,
+  lecture: { slidesText?: string | null },
+  sourceSummary?: LectureSummary | null,
+) {
+  if (!a.options?.densities?.length) return;
+  const primary = jobDensity(a);
+  const extra = a.options.densities.filter((x) => x !== primary);
+  const tr = a.repaired ?? a.asr;
+  // Detailed quotas used to force hallucination on ~14s / incomplete ASR — skip that sibling.
+  const thinInput = !!a.asrIncomplete || !tr?.segments?.length
+    || transcriptSpanSec(tr) < 180 || transcriptChars(tr) < 800 || isTranscriptThin(tr, lecture.slidesText);
+  const spawn = thinInput ? extra.filter((d) => d !== "detailed") : extra;
+  if (thinInput && extra.includes("detailed")) {
+    console.warn(`skipping detailed density sibling — thin/incomplete ASR (${transcriptSpanSec(tr ?? { language: "he", segments: [] })}s)`);
+  }
+  a.options = { ...a.options, densities: undefined };
+  const detailedSrc = primary === "detailed" && sourceSummary?.sections?.length ? sourceSummary : null;
+  for (const d of spawn) {
+    await cloneForDensity(lectureId, a, d, d !== "detailed" ? detailedSrc : null).catch((e) => {
+      console.warn(`failed to spawn ${d} sibling for ${lectureId}:`, (e as Error).message);
+    });
+  }
 }
 
 /** Resummarize. With a density different from the job's, a NEW job is created so each level keeps its own summary. */
@@ -152,14 +197,21 @@ export async function resummarizeJob(jobId: string, force = false, density?: Den
   const a = JSON.parse(job.artifacts) as Artifacts;
   if (density && density !== jobDensity(a) && a.asrComplete) {
     await withSiblingAsr(job.lectureId, jobId, a);
-    return { ok: true, job: await cloneForDensity(job.lectureId, a, density) };
+    const srcSum = density !== "detailed"
+      ? (jobDensity(a) === "detailed" && a.summary?.sections?.length ? a.summary : await latestDetailedSummary(job.lectureId))
+      : null;
+    return { ok: true, job: await cloneForDensity(job.lectureId, a, density, srcSum) };
   }
   if (!a.options?.density) a.options = { ...(a.options ?? {}), density: jobDensity(a) };
   const stuck = Date.now() - job.updatedAt > STUCK_MS;
   // Incomplete terminal work (summary/pdf missing, e.g. a crashed/timed-out summary call) is always restartable.
   const incomplete = !!a.asrComplete && (!a.summary || !a.pdf) && a.progressDetail?.stage !== job.stage; // honest in-flight work still needs stuck/force
   if (!a.asrComplete || (job.stage !== "done" && job.stage !== "failed" && !stuck && !force && !incomplete)) return { ok: false, reason: "not_retryable", job };
-  delete a.summary; delete a.html; delete a.pdf; delete a.hier; delete a.hierFailed;
+  delete a.summary; delete a.sourceSummary; delete a.html; delete a.pdf; delete a.hier; delete a.hierFailed;
+  if (jobDensity(a) !== "detailed") {
+    const detailed = await latestDetailedSummary(job.lectureId);
+    if (detailed) a.sourceSummary = detailed;
+  }
   await withSiblingAsr(job.lectureId, jobId, a); // always pull earlier sessions' transcripts, even without redoing ASR/repair
   const stage = resumeStage(a);
   a.progressDetail = { stage, label: stageLabel(stage) }; // never leave a stale "Done" behind
@@ -435,7 +487,28 @@ export async function advanceJob(jobId: string) {
       case "summary":
       {
         const tr = a.repaired ?? a.asr ?? { language: "he", segments: [] };
+        const dn = jobDensity(a);
         const t0 = Date.now();
+        let derived: LectureSummary | null = null;
+        if (dn !== "detailed" && ai.deriveSummary) {
+          const srcSum = a.sourceSummary ?? await latestDetailedSummary(lecture.id);
+          if (srcSum?.sections?.length) {
+            try {
+              derived = await ai.deriveSummary(srcSum, dn, ctx);
+            } catch (e) {
+              console.warn(`deriveSummary (${dn}) failed, falling back to transcript summarize:`, (e as Error).message);
+            }
+          }
+        }
+        if (derived) {
+          a.summaryMode = "derived";
+          a.summary = fixBackwardRanges(derived);
+          delete a.sourceSummary;
+          if (!a.slidesOnly) a.coverage = computeCoverage(tr, a.summary);
+          a.summary.memory_pairs = memoryPairs(a.summary);
+          a.summary.transcript_thin = a.slidesOnly ? false : isTranscriptThin(tr, ctx.slidesText) || !!a.summary.transcript_thin;
+          break;
+        }
         let hs: LectureSummary | null = null;
         if (!a.slidesOnly && ai.hierarchicalStep && !a.hierFailed && useHierarchical(tr)) {
           try { a.hier ??= {}; hs = await ai.hierarchicalStep(tr, ctx, a.hier, t0 + HIER_BUDGET_MS); }
@@ -488,19 +561,10 @@ export async function advanceJob(jobId: string) {
     delete a.overloadHolds; delete a.run;
     const ns = next ?? "done";
     if (ns !== "asr" || current !== "asr") a.progressDetail = { stage: ns, label: stageLabel(ns) + (a.asrIncomplete ? " · ASR incomplete — reprocess needed" : "") };
-    // Multi-density request: once the first summary is done, spawn one sibling job per extra level (reuses ASR+repair).
-    if (ns === "done" && a.options?.densities?.length) {
-      const extra = a.options.densities.filter((x) => x !== jobDensity(a));
-      const tr = a.repaired ?? a.asr;
-      // Detailed quotas used to force hallucination on ~14s / incomplete ASR — skip that sibling.
-      const thinInput = !!a.asrIncomplete || !tr?.segments?.length
-        || transcriptSpanSec(tr) < 180 || transcriptChars(tr) < 800 || isTranscriptThin(tr, lecture.slidesText);
-      const spawn = thinInput ? extra.filter((d) => d !== "detailed") : extra;
-      if (thinInput && extra.includes("detailed")) {
-        console.warn(`skipping detailed density sibling — thin/incomplete ASR (${transcriptSpanSec(tr ?? { language: "he", segments: [] })}s)`);
-      }
-      a.options = { ...a.options, densities: undefined };
-      for (const d of spawn) await cloneForDensity(job.lectureId, a, d);
+    // Multi-density request: spawn sibling jobs as soon as summary finishes (so compact/standard derive from detailed
+    // immediately without waiting on PDF rendering, and never get stranded if PDF fails).
+    if ((ns === "pdf" || ns === "done") && a.summary && a.options?.densities?.length) {
+      await spawnExtraDensities(job.lectureId, a, lecture, a.summary);
     }
     const [row] = await db.update(schema.jobs)
       .set({ stage: next ?? "done", artifacts: JSON.stringify(a), error: null, updatedAt: Date.now() })
@@ -536,6 +600,10 @@ export async function advanceJob(jobId: string) {
         .set({ stage: current, error: null, artifacts: JSON.stringify(a), updatedAt: Date.now() })
         .where(eq(schema.jobs.id, jobId)).returning();
       return row;
+    }
+    // If the primary density hard-failed after ASR+repair, still spawn remaining siblings so one bad density never strands the rest.
+    if (a.asrComplete && a.options?.densities?.length) {
+      await spawnExtraDensities(job.lectureId, a, lecture, a.summary);
     }
     const [row] = await db.update(schema.jobs)
       .set({ stage: "failed", error: `${current}: ${shortErr(e)}`, artifacts: JSON.stringify(a), updatedAt: Date.now() })

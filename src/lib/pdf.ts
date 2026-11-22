@@ -34,7 +34,7 @@ async function launch() {
   }
   const exe = candidates().find((p) => existsSync(p));
   if (!exe) return null;
-  return puppeteer.launch({ executablePath: exe, headless: true, args: ["--no-sandbox", "--disable-gpu"] });
+  return puppeteer.launch({ executablePath: exe, headless: true, args: ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"] });
 }
 
 export async function htmlToPdf(html: string, opts: { footerTemplate?: string } = {}): Promise<Buffer | null> {

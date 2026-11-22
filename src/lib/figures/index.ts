@@ -67,7 +67,7 @@ export async function pptxToPdf(data: Uint8Array): Promise<Uint8Array | null> {
   try {
     const src = path.join(dir, "deck.pptx");
     await writeFile(src, data);
-    await run(env("SOFFICE_PATH", "soffice"), ["--headless", "--convert-to", "pdf", "--outdir", dir, src], { timeout: 120_000 });
+    await run(env("SOFFICE_PATH", "soffice"), [`-env:UserInstallation=file://${dir}/lo-profile`, "--headless", "--convert-to", "pdf", "--outdir", dir, src], { timeout: 120_000 });
     return new Uint8Array(await readFile(path.join(dir, "deck.pdf")));
   } catch (e) { console.warn("pptx→pdf unavailable, no figures for this deck:", (e as Error).message); return null; }
   finally { await rm(dir, { recursive: true, force: true }).catch(() => {}); }

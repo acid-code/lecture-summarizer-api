@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 const HEAVY = ["./node_modules/@sparticuz/chromium/bin/**", "./fonts/**", "./node_modules/ffmpeg-static/ffmpeg", "./node_modules/@napi-rs/canvas*/**"];
 const nextConfig: NextConfig = {
+  output: "standalone",
   serverExternalPackages: ["@libsql/client", "puppeteer-core", "@sparticuz/chromium", "unpdf", "ffmpeg-static", "@napi-rs/canvas"],
   // ffmpeg-static: ~80 MB static linux-x64 ffmpeg used to cut ASR windows (src/lib/providers/clip.ts).
   // Heavy binaries (Chromium ~67 MB, ffmpeg ~77 MB, canvas ~32 MB) ONLY for the functions that run the

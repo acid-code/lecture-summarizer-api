@@ -1,0 +1,17 @@
+services:
+  lecture-summarizer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lecture-summarizer-api
+    env_file:
+      - .env.docker
+    environment:
+      CHROME_PATH: /usr/bin/chromium
+      SOFFICE_PATH: /usr/bin/soffice
+      PDFTOPPM_PATH: /usr/bin/pdftoppm
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

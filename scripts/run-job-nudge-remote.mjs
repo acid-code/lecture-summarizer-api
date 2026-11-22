@@ -15,13 +15,14 @@ for (const line of fs.readFileSync(".env.local", "utf8").split(/\r?\n/)) {
 const apply = process.argv.includes("--apply");
 const maxArg = process.argv.find((arg) => arg.startsWith("--max="));
 const max = maxArg ? maxArg.slice("--max=".length) : "12";
+const failMissing = process.argv.includes("--fail-missing");
 const token = process.env.API_TOKEN;
 if (!token) {
   console.error("missing API_TOKEN in .env.local");
   process.exit(2);
 }
 const base = process.env.API_BASE || "https://lecture-summarizer-api.vercel.app";
-const url = `${base}/v1/admin/job-nudge?${apply ? "" : "dry_run=1&"}max=${encodeURIComponent(max)}`;
+const url = `${base}/v1/admin/job-nudge?${apply ? "" : "dry_run=1&"}max=${encodeURIComponent(max)}${failMissing ? "&fail_missing=1" : ""}`;
 const res = await fetch(url, {
   method: "POST",
   headers: { authorization: `Bearer ${token}` },

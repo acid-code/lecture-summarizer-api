@@ -318,9 +318,10 @@ export async function uploadMarkers(req: Request, lid: string) {
 export async function startProcess(req: Request, lid: string) {
   const l = await lectureOr404(lid); if (!l) return notFound();
   const options = (await req.json().catch(() => ({})))?.options ?? {};
-  { // density: single level; densities: several levels (one summary job each, ASR shared)
+  { // density: single level; densities: several levels (detailed runs first so compact/standard derive from it)
     const ds = (Array.isArray(options.densities) ? options.densities : []).map(parseDensity).filter(Boolean) as Density[];
-    const d0 = parseDensity(options.density) ?? ds[0] ?? "standard";
+    const preferred = ds.includes("detailed") ? "detailed" : ds[0];
+    const d0 = parseDensity(options.density) ?? preferred ?? "standard";
     options.density = d0; options.densities = ds.length > 1 ? [...new Set(ds)] : undefined;
   }
   // Need audio or materials (lecture decks, or course files) — slides-only summaries don't need a recording.
@@ -556,7 +557,7 @@ export async function listSummaries(lid: string) {
     const done = jobs.find((x) => x.stage === "done" && jobDensity(JSON.parse(x.artifacts)) === d);
     const latest=jobs.find(x=>jobDensity(JSON.parse(x.artifacts))===d);
     const running=latest&&latest.stage!=="done"&&latest.stage!=="failed"&&(!done||latest.updatedAt>done.updatedAt)?latest:undefined;
-    const failed=jobs.find(x=>x.stage==="failed"&&jobDensity(JSON.parse(x.artifacts))===d&&(!done||x.updatedAt>done.updatedAt));
+    const failed=jobs.find(x=>x.stage==="failed"&&!(x.error&&/^superseded:/i.test(x.error))&&jobDensity(JSON.parse(x.artifacts))===d&&(!done||x.updatedAt>done.updatedAt));
     out[d] = { done_job_id: done?.id ?? null, updated_at: done ? new Date(done.updatedAt).toISOString() : null, running_job_id: running?.id ?? null, running_stage:running?.stage??null, failed_job_id:running?null:failed?.id??null };
   }
   return j({ lecture_id: lid, densities: out });

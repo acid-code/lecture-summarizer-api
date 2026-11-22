@@ -2,7 +2,7 @@ import { slidesForSummary } from "./prompts";
 import { GoogleGenAI, createPartFromUri, type Part } from "@google/genai";
 import { readFileUrl } from "../storage";
 import { clipper } from "./clip";
-import { applyRepairs, repairPrompt, spellingPrompt, summaryPrompt, NO_NIQQUD, summaryTooShort, summaryOvergrown, spokenSectionCount, expandNote, shrinkNote, depthTargets } from "./prompts";
+import { applyRepairs, repairPrompt, spellingPrompt, summaryPrompt, deriveSummaryPrompt, NO_NIQQUD, summaryTooShort, summaryOvergrown, spokenSectionCount, expandNote, shrinkNote, depthTargets } from "./prompts";
 import { hierarchicalStep } from "./hierarchical";
 import type { AiProvider, Repair, LectureSummary, Transcript, WindowTranscript } from "./types";
 
@@ -395,6 +395,13 @@ export const geminiProvider: AiProvider = {
   },
   hierarchicalStep(t, ctx, state, deadline) {
     return hierarchicalStep(t, ctx, <T,>(p: string) => json<T>([p]), state, deadline);
+  },
+  async deriveSummary(source, target, ctx): Promise<LectureSummary> {
+    const derived = unwrapSummary(await json<LectureSummary>([deriveSummaryPrompt(source, target, ctx)]));
+    if (!derived.structure_mode && source.structure_mode) derived.structure_mode = source.structure_mode;
+    if (!derived.big_picture && source.big_picture) derived.big_picture = source.big_picture;
+    if (derived.transcript_thin === undefined && source.transcript_thin !== undefined) derived.transcript_thin = source.transcript_thin;
+    return derived;
   },
 };
 

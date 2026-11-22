@@ -69,4 +69,6 @@ export interface AiProvider {
   summarize(t: Transcript, repairs: Repair[], ctx: LectureContext): Promise<LectureSummary>;
   /** Long lectures: resumable hierarchical summary step; null = not finished (state updated, call again). */
   hierarchicalStep?(t: Transcript, ctx: LectureContext, state: import("./hierarchical").HierState, deadline: number): Promise<LectureSummary | null>;
+  /** Condense an existing detailed LectureSummary into a shorter density ("standard" or "compact") in one call. */
+  deriveSummary?(source: LectureSummary, target: "compact" | "standard", ctx: LectureContext): Promise<LectureSummary>;
 }

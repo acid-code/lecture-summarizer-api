@@ -61,6 +61,47 @@ cp .env.example .env.local   # fill what you have; everything is optional locall
 npm run dev                  # http://localhost:3000
 ```
 
+## Docker on a home mini-PC
+
+The included Compose setup runs Next.js on `0.0.0.0:3000`, keeps the SQLite database and uploaded
+files in `./data`, and includes Chromium, Poppler, LibreOffice, and ffmpeg support.
+
+```bash
+cp .env.example .env.docker
+docker compose up -d --build
+docker compose ps
+curl http://127.0.0.1:3000/v1/health
+```
+
+Edit `.env.docker` before restarting:
+
+- `GEMINI_API_KEY` or `GEMINI_API_KEYS`: required for real ASR/repair/summary processing.
+- `GEMINI_MODEL` / `GEMINI_FALLBACK_MODELS`: optional model overrides.
+- `API_TOKEN`: set the same bearer token in the Android app.
+- `MISTRAL_API_KEY`: optional for automatic figure selection.
+- `R2_*`: optional Cloudflare R2 uploads. When omitted, uploads and artifacts use `./data`.
+- `DATABASE_URL`: leave unset for local SQLite, or set a Turso `libsql://` URL.
+- `DATABASE_AUTH_TOKEN`: required with a Turso database.
+- `DELETE_RAW_AUDIO=true`, `AUTO_ADVANCE_ON_POLL=true`, `FIGURES=on`: local defaults.
+
+After changing `.env.docker`, rebuild/restart:
+
+```bash
+docker compose up -d --build --force-recreate
+```
+
+View logs with `docker compose logs -f`.
+
+For the Android app, use the mini-PC's Tailscale IP or Tailscale MagicDNS name:
+
+```text
+API / server URL: http://100.x.y.z:3000
+API token: the exact value of API_TOKEN in .env.docker
+```
+
+Use `https://` only if an HTTPS/TLS reverse proxy is placed in front of port 3000. Tailscale
+Serve can provide that; the app's HTTP URL must match what the app is allowed to use.
+
 Smoke test (mock provider, no keys):
 ```bash
 # Preferred: scripts/mock-job.sh http://localhost:3000   (v1 API). Legacy /api flow:

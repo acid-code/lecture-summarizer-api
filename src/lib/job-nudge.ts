@@ -43,6 +43,7 @@ export type JobNudgeReport = {
 };
 
 const BLOB_HOLD_RE = /Blob storage suspended|blob capacity|store has been suspended|R2 storage limit/i;
+const TERMINAL_FAILED_RE = /^(superseded:|source_missing:)/i;
 
 async function verifyR2AudioReady(lectureId: string, artifacts: Artifacts): Promise<{ ready: boolean; reason?: string }> {
   if (artifacts.asrComplete) return { ready: true };
@@ -215,18 +216,21 @@ export async function runJobNudge(opts: { dryRun?: boolean; forceBlob?: boolean;
     const a = parseArtifacts(row.artifacts);
     const density = densityOf(a);
     const doneAt = density ? doneNewest.get(`${row.lectureId}:${density}`) : undefined;
-    const superseded = doneAt != null && row.updatedAt < doneAt;
+    const terminalFailed = row.stage === "failed" && !!row.error && TERMINAL_FAILED_RE.test(row.error);
+    const superseded = !terminalFailed && doneAt != null && row.updatedAt < doneAt;
     const blobHold = isBlobHoldArtifacts(a, now);
     const holdUntil = a.holdUntil && a.holdUntil > now ? a.holdUntil : null;
     const leaseBusy = !!(a.run && a.run.stage === row.stage && now - a.run.at < RUN_LEASE_MS && row.updatedAt <= a.run.at);
-    const stuck = now - row.updatedAt > STUCK_MS;
-    const holdExpired = !!(a.holdUntil && a.holdUntil <= now);
+    const stuck = !terminalFailed && now - row.updatedAt > STUCK_MS;
+    const holdExpired = !terminalFailed && !!(a.holdUntil && a.holdUntil <= now);
     const eligible =
-      superseded ||
-      stuck ||
-      row.stage === "failed" ||
-      holdExpired ||
-      (blobHold && blobWritable !== false);
+      !terminalFailed && (
+        superseded ||
+        stuck ||
+        row.stage === "failed" ||
+        holdExpired ||
+        (blobHold && blobWritable !== false)
+      );
     const c: NudgeCandidate = {
       id: row.id,
       lectureId: row.lectureId,
@@ -288,7 +292,6 @@ export async function runJobNudge(opts: { dryRun?: boolean; forceBlob?: boolean;
         stage: "failed",
         error: "superseded: same density already done (auto nudge)",
         artifacts: JSON.stringify(a),
-        updatedAt: Date.now(),
       })
       .where(sql`${schema.jobs.id} = ${c.id}`);
   }
