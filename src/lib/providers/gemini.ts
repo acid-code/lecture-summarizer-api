@@ -184,9 +184,51 @@ export function unwrapSummary<T>(x: T): T {
   return v as T;
 }
 
+/**
+ * Fix invalid backslash escapes (e.g. LaTeX `\alpha`, `\sum`, `\left`, `\(`, `\underline`) and raw control
+ * characters inside JSON string literals. Only called as a fallback when strict `JSON.parse` fails.
+ */
+export function repairJsonEscapes(s: string): string {
+  let out = "";
+  let inStr = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (!inStr) {
+      out += c;
+      if (c === '"') inStr = true;
+      continue;
+    }
+    if (c === '"') {
+      out += c;
+      inStr = false;
+      continue;
+    }
+    if (c === "\\") {
+      const nx = s[i + 1];
+      if (nx === undefined) { out += "\\\\"; continue; }
+      if (nx === '"' || nx === "\\" || nx === "/" || nx === "b" || nx === "f" || nx === "n" || nx === "r" || nx === "t") {
+        out += "\\" + nx; i++; continue;
+      }
+      if (nx === "u" && /^[0-9a-fA-F]{4}$/.test(s.slice(i + 2, i + 6))) {
+        out += s.slice(i, i + 6); i += 5; continue;
+      }
+      // Invalid escape (typically LaTeX like \alpha, \sum, \left, \(, \underline): double the backslash.
+      out += "\\\\" + nx; i++; continue;
+    }
+    if (c === "\n") { out += "\\n"; continue; }
+    if (c === "\r") { out += "\\r"; continue; }
+    if (c === "\t") { out += "\\t"; continue; }
+    out += c;
+  }
+  return out;
+}
+
 function parse<T>(raw: string): T {
-  try { return JSON.parse(extractJson(raw)) as T; } catch (e) {
-    throw new BadJsonError(`invalid JSON from Gemini (${raw.length} chars): ${(e as Error).message}`, raw);
+  const extracted = extractJson(raw);
+  try { return JSON.parse(extracted) as T; } catch (firstErr) {
+    try { return JSON.parse(repairJsonEscapes(extracted)) as T; } catch {
+      throw new BadJsonError(`invalid JSON from Gemini (${raw.length} chars): ${(firstErr as Error).message}`, raw);
+    }
   }
 }
 
