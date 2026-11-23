@@ -488,6 +488,8 @@ export async function advanceJob(jobId: string) {
       {
         const tr = a.repaired ?? a.asr ?? { language: "he", segments: [] };
         const dn = jobDensity(a);
+        // Pin density on options before a.summary is set so jobDensity(a) can never flip from "standard" to "detailed".
+        a.options = { ...(a.options ?? {}), density: dn };
         const t0 = Date.now();
         let derived: LectureSummary | null = null;
         if (dn !== "detailed" && ai.deriveSummary) {
@@ -543,6 +545,11 @@ export async function advanceJob(jobId: string) {
         break;
       }
       case "pdf": {
+        if (!a.summary?.sections) {
+          // Guard against a missing summary (e.g. concurrent resummarize reset): fall back to summary instead of crashing.
+          next = "summary";
+          break;
+        }
         const figures = figuresEnabled() ? await withTimeout(slideDecks(lecture).then((d) => pickFigures(d, a.summary!)), Number(process.env.FIGURES_TIMEOUT_MS || 90_000), "figures")
           .catch((e) => { console.warn("figures skipped:", (e as Error).message); return []; }) : [];
         a.figures = figures.map(({ src: _src, ...f }) => f); a.figuresNote = figuresEnabled() ? lastFigureNote : "FIGURES=off";
@@ -557,7 +564,10 @@ export async function advanceJob(jobId: string) {
     }
     // A final POST /process may clear options.live while this (long) ASR call runs; don't overwrite it with our stale copy.
     const fresh = await db.query.jobs.findFirst({ where: eq(schema.jobs.id, jobId) });
-    if (fresh) { const fo = (JSON.parse(fresh.artifacts) as { options?: object }).options; if (fo) (a as { options?: object }).options = fo; }
+    if (fresh) {
+      const fo = (JSON.parse(fresh.artifacts) as Artifacts).options;
+      if (fo) a.options = { ...fo, ...(a.options?.density && !fo.density ? { density: a.options.density } : {}) };
+    }
     delete a.overloadHolds; delete a.run;
     const ns = next ?? "done";
     if (ns !== "asr" || current !== "asr") a.progressDetail = { stage: ns, label: stageLabel(ns) + (a.asrIncomplete ? " · ASR incomplete — reprocess needed" : "") };
